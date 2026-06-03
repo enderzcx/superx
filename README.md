@@ -55,7 +55,7 @@ superx article <url> --source-mode opencli
 - Python 3.9+
 - Grok Build CLI：<https://x.ai/cli>
 - SuperGrok 或 X Premium+，用于 Grok-native X 工具
-- 可选：OpenCLI，用于 `article --source-mode opencli`
+- 可选：[OpenCLI](https://github.com/jackwener/opencli)，用于 `article --source-mode opencli`
 
 Grok Build CLI 的安装方式以官方页面为准。安装后登录：
 
@@ -75,6 +75,8 @@ grok -p "hello" --yolo --max-turns 1 --output-format json --no-auto-update
 npm install -g @jackwener/opencli
 opencli twitter --help
 ```
+
+OpenCLI 仓库：<https://github.com/jackwener/opencli>
 
 安装 `superx`：
 
@@ -156,7 +158,7 @@ superx article 'https://x.com/0xenderzcx/status/2061778310934516097?s=20' --sour
 
 - `superx article <url> --source-mode opencli`：当前 repo 内已实现的 fallback，会把 article/status 正文写成 Markdown。
 - `r.jina.ai`：适合把部分公开网页或公开 X URL 转成 Markdown，取决于目标页面是否可访问。
-- `opencli twitter article|thread|profile|search`：适合配合本地 Chrome/X 登录态抓取可见内容。
+- [`opencli twitter article|thread|profile|search`](https://github.com/jackwener/opencli)：适合配合本地 Chrome/X 登录态抓取可见内容。
 - `fetch-x` skill：如果你在支持该 skill 的本地 Agent 环境中，可继续用它的 proxy + opencli 路由。
 
 这些路线解决的是“公开或本地登录可见内容怎么取”，不是“怎样获得 Grok 原生 X 工具”。
@@ -242,7 +244,7 @@ superx article <url> --source-mode opencli
 
 ### OpenCLI fallback 失败
 
-先确认 OpenCLI 可用：
+先确认 [OpenCLI](https://github.com/jackwener/opencli) 可用：
 
 ```bash
 npm install -g @jackwener/opencli
