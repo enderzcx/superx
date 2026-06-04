@@ -2,16 +2,21 @@
 """
 superx: Thin wrapper to expose Grok Build's native X/Twitter tools
 (x_user_search, x_keyword_search, x_semantic_search, x_thread_fetch)
-to local agents like Codex via simple CLI.
+and one-shot Grok research capability to local agents like Codex via simple CLI.
 
-Usage examples:
+Core X commands (structured, high-quality, no browser):
   superx user "xAI" --count 5
   superx semantic "new Grok model release" --limit 5 --from-date 2026-04-01
   superx keyword 'from:xai min_faves:500' --mode Latest --limit 10
   superx thread 1661523610111193088   # or full https://x.com/.../status/...
-  superx article 'https://x.com/0xenderzcx/status/2061778310934516097?s=20'
+  superx article 'https://x.com/0xenderzcx/status/2061778310934516097?s=20'  # caches to .superx/articles/
 
-The wrapper forces Grok to call the exact tool and return ONLY the tool result as JSON.
+One-shot research (solves the "Codex generate prompt -> paste to web Grok -> paste back" loop):
+  superx research "调研 2026 年 AI agent 如何更好使用 Grok Build 原生 X 工具和本地集成"
+
+The X-specific commands force single-tool structured JSON output.
+The research command runs one-shot Grok research (web + X tools) and returns clean Markdown, auto-cached to .superx/research/.
+
 Requires: grok CLI in PATH or at ~/.local/bin/grok, and authenticated (XAI_API_KEY or login).
 """
 
@@ -37,7 +42,25 @@ def resolve_bin(env_name: str, default_name: str) -> str:
 GROK_BIN = resolve_bin("GROK_BIN", "grok")
 OPENCLI_BIN = resolve_bin("OPENCLI_BIN", "opencli")
 
-def run_grok_headless(prompt: str, max_turns: int = 4) -> dict:
+
+def strip_ansi(value: str) -> str:
+    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value or "")
+
+
+def trim_text(value: str, max_len: int = 4000) -> str:
+    value = strip_ansi(value or "")
+    return value if len(value) <= max_len else value[-max_len:]
+
+
+def coerce_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def run_grok_headless(prompt: str, max_turns: int = 4, timeout: int = 120, print_errors: bool = True, include_internal: bool = False) -> dict:
     """Run grok -p with yolo, capture the json output."""
     cmd = [
         GROK_BIN,
@@ -52,30 +75,86 @@ def run_grok_headless(prompt: str, max_turns: int = 4) -> dict:
             cmd,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=timeout,
         )
+    except FileNotFoundError:
+        print(f"Error: grok binary not found: {GROK_BIN}", file=sys.stderr)
+        sys.exit(127)
     except subprocess.TimeoutExpired:
-        print("Error: grok timed out", file=sys.stderr)
+        print(f"Error: grok timed out after {timeout}s", file=sys.stderr)
         sys.exit(1)
 
     if proc.returncode != 0:
-        print(f"grok exited {proc.returncode}", file=sys.stderr)
-        if proc.stderr:
-            print(proc.stderr.strip(), file=sys.stderr)
+        if print_errors:
+            print(f"grok exited {proc.returncode}", file=sys.stderr)
+            if proc.stderr:
+                print(trim_text(proc.stderr.strip()), file=sys.stderr)
         # still try to parse stdout if any
     stdout = (proc.stdout or "").strip()
     if not stdout:
         print("Error: no output from grok", file=sys.stderr)
         sys.exit(1)
     try:
-        return json.loads(stdout)
+        data = json.loads(stdout)
+        if include_internal and isinstance(data, dict):
+            data["_superx_grok_returncode"] = proc.returncode
+            if proc.stderr:
+                data["_superx_grok_stderr"] = trim_text(proc.stderr.strip())
+        return data
     except json.JSONDecodeError:
         print("Warning: grok output was not JSON, raw:", file=sys.stderr)
         print(stdout[:500], file=sys.stderr)
-        return {"text": stdout}
+        fallback = {
+            "text": stdout,
+        }
+        if include_internal:
+            fallback["_superx_grok_returncode"] = proc.returncode
+            fallback["_superx_grok_stderr"] = trim_text(proc.stderr.strip()) if proc.stderr else ""
+        return fallback
+
+
+def run_grok_plain(prompt: str, max_turns: int = 8, timeout: int = 900) -> dict:
+    cmd = [
+        GROK_BIN,
+        "-p", prompt,
+        "--yolo",
+        "--max-turns", str(max_turns),
+        "--no-auto-update",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return {
+            "text": "",
+            "_superx_grok_returncode": 127,
+            "_superx_grok_stderr": f"grok binary not found: {GROK_BIN}",
+        }
+    except subprocess.TimeoutExpired as exc:
+        stderr = coerce_text(exc.stderr)
+        timeout_note = f"grok timed out after {timeout}s"
+        stderr = f"{stderr}\n{timeout_note}" if stderr else timeout_note
+        partial_stdout = getattr(exc, "stdout", None)
+        if partial_stdout is None:
+            partial_stdout = getattr(exc, "output", None)
+        return {
+            "text": coerce_text(partial_stdout),
+            "_superx_grok_returncode": 124,
+            "_superx_grok_stderr": trim_text(stderr),
+        }
+    return {
+        "text": proc.stdout or "",
+        "_superx_grok_returncode": proc.returncode,
+        "_superx_grok_stderr": trim_text(proc.stderr.strip()) if proc.stderr else "",
+    }
+
 
 def extract_text(result: dict) -> str:
-    return result.get("text", "") or result.get("result", "") or str(result)
+    if isinstance(result, dict):
+        if "text" in result:
+            return result.get("text") or ""
+        if "result" in result:
+            return result.get("result") or ""
+    return str(result)
 
 def parse_json_text(text: str):
     return json.loads(text)
@@ -320,10 +399,139 @@ def cmd_article(args):
     else:
         print(md)
 
+
+def clean_markdown_output(text: str) -> str:
+    text = strip_ansi(text).strip()
+    fence = re.fullmatch(r"```(?:markdown)?\s*\n?(?P<body>.*?)\n?```", text, flags=re.DOTALL)
+    if fence:
+        text = fence.group("body").strip()
+    if not text.startswith("#"):
+        first_heading = re.search(r"(?m)^#{1,6}\s+\S", text)
+        preamble = text[:first_heading.start()].strip() if first_heading else ""
+        if first_heading and "```" not in preamble:
+            text = text[first_heading.start():]
+    return text.strip()
+
+
+def build_research_prompt(query: str) -> str:
+    """Turn headless grok into a one-shot X-first researcher."""
+    return f"""You are a world-class, thorough researcher helping a local coding agent.
+
+You have access to web search, open_page, X/Twitter native tools (x_user_search, x_semantic_search, x_keyword_search, x_thread_fetch), and any other tools available in this Grok environment.
+
+Research task: {query}
+
+Execution rules:
+- Use tools proactively and iteratively when they improve the answer. Do multiple tool calls if needed.
+- If the task is explicitly a simple connectivity, formatting, or no-tool smoke check, answer directly without forcing tool calls.
+- For timely, community, or social signals, especially anything on X/Twitter, heavily leverage the native X tools because they are often superior.
+- If the task is not X-related, use web and other available tools directly, but still keep the report source-backed.
+- Prioritize primary sources, recent high-signal content, official docs, and direct data.
+- Cross-verify important claims.
+- Keep precise URLs for every key fact or quote.
+- This is a one-shot research report, not a follow-up conversation or long-running collaboration session.
+
+Output rules (strict):
+- When research is complete, output ONLY the final report as clean, professional Markdown.
+- Do NOT prefix with "Here is the research report", "```markdown", or any meta text.
+- Do NOT add closing remarks after the report.
+- Structure with clear headings, e.g.:
+  # [Good Title]
+  ## Executive Summary
+  ## Key Findings
+  - bullets
+  ## Detailed Insights / Analysis
+  ## Sources and References
+  - [Title](url)
+- Make the report directly usable by an AI coding agent or human builder (actionable, with links, data where relevant).
+
+Start now. Use tools when they are useful. When finished, emit only the Markdown."""
+
+
+def cmd_research(args):
+    query = args.query.strip()
+    if not query:
+        print("Error: research query is empty", file=sys.stderr)
+        sys.exit(2)
+    if args.timeout <= 0:
+        print("Error: --timeout must be > 0", file=sys.stderr)
+        sys.exit(2)
+    if args.retries < 0:
+        print("Error: --retries must be >= 0", file=sys.stderr)
+        sys.exit(2)
+
+    prompt = build_research_prompt(query)
+    res = {}
+    text = ""
+    attempts = args.retries + 1
+    for attempt in range(1, attempts + 1):
+        res = run_grok_plain(prompt, max_turns=args.max_turns, timeout=args.timeout)
+        text = clean_markdown_output(extract_text(res))
+        if isinstance(res, dict) and int(res.get("_superx_grok_returncode", 0) or 0) == 127:
+            break
+        if text or attempt == attempts:
+            break
+    grok_returncode = int(res.get("_superx_grok_returncode", 0) or 0) if isinstance(res, dict) else 0
+    grok_stderr = res.get("_superx_grok_stderr", "") if isinstance(res, dict) else ""
+    if not text:
+        if grok_returncode == 127 and grok_stderr:
+            print(f"Error: {grok_stderr}", file=sys.stderr)
+            sys.exit(127)
+        print(f"Error: grok research returned empty output after {attempts} attempt(s)", file=sys.stderr)
+        sys.exit(1)
+
+    # Cache like articles
+    cache_dir = default_cache_dir(args.cache_dir)
+    research_dir = cache_dir / "research"
+    slug = safe_slug(query)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    filename = f"{ts}-{slug}.md"
+    if args.output:
+        requested_output = Path(args.output).expanduser()
+        if args.output.endswith(os.sep) or (requested_output.exists() and requested_output.is_dir()):
+            output_path = requested_output / filename
+        else:
+            output_path = requested_output
+    else:
+        output_path = research_dir / filename
+    save_markdown(text, output_path)
+
+    metadata = {
+        "query": query,
+        "markdown_path": str(output_path),
+        "metadata_path": str(output_path.with_suffix(".json")),
+        "chars": len(text),
+        "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "max_turns": args.max_turns,
+        "timeout": args.timeout,
+        "attempts": attempt,
+        "retries": args.retries,
+        "fetcher": "grok:research",
+        "grok_returncode": grok_returncode,
+    }
+    if grok_returncode != 0:
+        metadata["warning"] = f"grok exited {grok_returncode}; research output may be partial"
+        if grok_stderr:
+            metadata["grok_stderr_tail"] = trim_text(grok_stderr, 2000)
+    save_markdown(json.dumps(metadata, ensure_ascii=False, indent=2), output_path.with_suffix(".json"))
+
+    if args.path_only:
+        print(output_path)
+    elif args.format == "json":
+        print(json.dumps(metadata, ensure_ascii=False, indent=2))
+    else:
+        print(text)
+    if grok_returncode != 0 and not args.allow_partial:
+        print(f"Warning: grok exited {grok_returncode}; saved partial research to {output_path}", file=sys.stderr)
+        sys.exit(grok_returncode)
+    if grok_returncode != 0:
+        print(f"Warning: grok exited {grok_returncode}; saved partial research to {output_path}", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="superx",
-        description="Call Grok Build native X tools from CLI / Codex / other agents."
+        description="Call Grok Build native X tools and X-first Grok research from CLI / Codex / other agents."
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -366,6 +574,19 @@ def main():
     p_article.add_argument("--force", action="store_true", help="ignore cache and fetch again")
     p_article.add_argument("--source-mode", choices=["auto", "grok", "opencli"], default="auto", help="fetcher order")
     p_article.set_defaults(func=cmd_article)
+
+    # research - X-first one-shot research via Grok (web + native X tools etc.)
+    p_research = sub.add_parser("research", help="One-shot Grok research optimized for X/frontier signals. Outputs Markdown and caches to .superx/research/.")
+    p_research.add_argument("query", help="Research question or task")
+    p_research.add_argument("--max-turns", type=int, default=8, help="Max agent turns for research depth (default 8)")
+    p_research.add_argument("--format", choices=["md", "json"], default="md")
+    p_research.add_argument("--output", help="Custom output .md file path; existing directories or trailing slashes receive an auto-named file. Defaults to ./.superx/research/<ts>-<slug>.md")
+    p_research.add_argument("--cache-dir", help="Cache root. Defaults to ./.superx or SUPERX_CACHE_DIR")
+    p_research.add_argument("--path-only", action="store_true", help="print only the saved Markdown path")
+    p_research.add_argument("--timeout", type=int, default=int(os.environ.get("SUPERX_RESEARCH_TIMEOUT", "900")), help="Grok subprocess timeout in seconds (default 900 or SUPERX_RESEARCH_TIMEOUT)")
+    p_research.add_argument("--retries", type=int, default=int(os.environ.get("SUPERX_RESEARCH_RETRIES", "1")), help="Retry count when Grok returns no usable Markdown (default 1 or SUPERX_RESEARCH_RETRIES)")
+    p_research.add_argument("--allow-partial", action="store_true", help="exit 0 even if grok exits non-zero after producing output")
+    p_research.set_defaults(func=cmd_research)
 
     args = parser.parse_args()
     # normalize post_id if URL passed

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "superx"
-version = "0.1.0"
-description = "Agent-friendly CLI wrapper for Grok Build native X tools"
+version = "0.2.0"
+description = "Agent-friendly CLI wrapper for Grok Build native X tools and X-first Grok research"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -31,4 +31,3 @@ superx = "superx:main"
 
 [tool.setuptools]
 py-modules = ["superx"]
-
