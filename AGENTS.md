@@ -18,7 +18,7 @@ superx semantic <query> [--limit N] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-
 superx keyword <query> [--limit N] [--mode Latest|Top] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]
 superx thread <post-id-or-status-url>
 superx article <post-id-or-status-url> [--format md|json] [--path-only] [--force] [--output PATH] [--cache-dir DIR] [--source-mode auto|grok|opencli]
-superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--allow-partial] [--output PATH] [--cache-dir DIR]
+superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--allow-partial] [--output PATH] [--cache-dir DIR] [--model MODEL] [--effort low|medium|high|xhigh|max] [--reasoning-effort EFFORT] [--session-id SESSION_ID] [--check]
 ```
 
 ## Capability Boundaries
@@ -30,7 +30,10 @@ Do not overclaim.
 - Without SuperGrok / X Premium+, do not claim the Grok-native `x_*` tools still work.
 - `research` is one-shot Grok research for replacing the manual "Codex prompt -> web Grok -> paste back" loop. It is not a general Grok collaboration bridge.
 - `research` depends on local Grok CLI access. If it uses native X tools, the same SuperGrok / X Premium+ boundary applies.
-- `research` has no OpenCLI fallback and currently does not support background jobs, status/result/cancel, follow-up sessions, or durable multi-turn collaboration.
+- `research` has no OpenCLI fallback and currently does not support background jobs, status/result/cancel, or durable managed collaboration.
+- Use `--effort max --check --max-turns 8+` for expert-style one-shot research. `--check` consumes extra Grok turns.
+- `--session-id` resumes an existing Grok session via `-r/--resume`; it must be a real id from `grok sessions list` and does not create a named session.
+- `--reasoning-effort` only works on models that support it. Current local default `grok-build` rejects it with a 400.
 - `research` retries once by default only when Grok returns no usable Markdown. This is not a permissions, rate-limit, or no-membership fallback.
 - If Grok exits non-zero or times out after producing output, `research` writes the Markdown and metadata with a partial warning, then exits non-zero unless `--allow-partial` is passed.
 - No-membership fallback means using open/public routes:

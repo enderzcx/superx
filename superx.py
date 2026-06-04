@@ -113,7 +113,16 @@ def run_grok_headless(prompt: str, max_turns: int = 4, timeout: int = 120, print
         return fallback
 
 
-def run_grok_plain(prompt: str, max_turns: int = 8, timeout: int = 900) -> dict:
+def run_grok_plain(
+    prompt: str,
+    max_turns: int = 8,
+    timeout: int = 900,
+    model: str = None,
+    effort: str = None,
+    reasoning_effort: str = None,
+    session_id: str = None,
+    check: bool = False,
+) -> dict:
     cmd = [
         GROK_BIN,
         "-p", prompt,
@@ -121,6 +130,16 @@ def run_grok_plain(prompt: str, max_turns: int = 8, timeout: int = 900) -> dict:
         "--max-turns", str(max_turns),
         "--no-auto-update",
     ]
+    if model:
+        cmd.extend(["-m", model])
+    if effort:
+        cmd.extend(["--effort", effort])
+    if reasoning_effort:
+        cmd.extend(["--reasoning-effort", reasoning_effort])
+    if session_id:
+        cmd.extend(["-r", session_id])  # resume an existing Grok session for follow-up
+    if check:
+        cmd.append("--check")  # self-verification loop, expert double-check
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
@@ -413,13 +432,24 @@ def clean_markdown_output(text: str) -> str:
     return text.strip()
 
 
-def build_research_prompt(query: str) -> str:
-    """Turn headless grok into a one-shot X-first researcher."""
+def build_research_prompt(query: str, *, effort: str = None, session_id: str = None) -> str:
+    """Turn headless grok into a one-shot (or session-continued) X-first researcher.
+    The effort/session are mainly controlled at CLI level via --effort / --session-id,
+    this prompt just sets the researcher persona and strict output contract.
+    """
+    context_note = ""
+    if session_id:
+        context_note = "\nThis is a continuation of an existing Grok session. Build on previous context if available via that session."
+    effort_note = ""
+    if effort and effort in ("high", "xhigh", "max"):
+        effort_note = f"\nYou are operating in high-effort mode ({effort}). Be especially thorough, consider edge cases, cross-verify aggressively, and produce deeper analysis."
+
     return f"""You are a world-class, thorough researcher helping a local coding agent.
 
-You have access to web search, open_page, X/Twitter native tools (x_user_search, x_semantic_search, x_keyword_search, x_thread_fetch), and any other tools available in this Grok environment.
+You have access to web search, open_page, X/Twitter native tools (x_user_search, x_semantic_search, x_keyword_search, x_thread_fetch), and any other tools available in this Grok environment.{effort_note}
 
 Research task: {query}
+{context_note}
 
 Execution rules:
 - Use tools proactively and iteratively when they improve the answer. Do multiple tool calls if needed.
@@ -429,7 +459,6 @@ Execution rules:
 - Prioritize primary sources, recent high-signal content, official docs, and direct data.
 - Cross-verify important claims.
 - Keep precise URLs for every key fact or quote.
-- This is a one-shot research report, not a follow-up conversation or long-running collaboration session.
 
 Output rules (strict):
 - When research is complete, output ONLY the final report as clean, professional Markdown.
@@ -460,12 +489,25 @@ def cmd_research(args):
         print("Error: --retries must be >= 0", file=sys.stderr)
         sys.exit(2)
 
-    prompt = build_research_prompt(query)
+    prompt = build_research_prompt(
+        query,
+        effort=getattr(args, 'effort', None),
+        session_id=getattr(args, 'session_id', None),
+    )
     res = {}
     text = ""
     attempts = args.retries + 1
     for attempt in range(1, attempts + 1):
-        res = run_grok_plain(prompt, max_turns=args.max_turns, timeout=args.timeout)
+        res = run_grok_plain(
+            prompt,
+            max_turns=args.max_turns,
+            timeout=args.timeout,
+            model=args.model,
+            effort=args.effort,
+            reasoning_effort=getattr(args, 'reasoning_effort', None),
+            session_id=getattr(args, 'session_id', None),
+            check=getattr(args, 'check', False),
+        )
         text = clean_markdown_output(extract_text(res))
         if isinstance(res, dict) and int(res.get("_superx_grok_returncode", 0) or 0) == 127:
             break
@@ -478,6 +520,9 @@ def cmd_research(args):
             print(f"Error: {grok_stderr}", file=sys.stderr)
             sys.exit(127)
         print(f"Error: grok research returned empty output after {attempts} attempt(s)", file=sys.stderr)
+        if grok_stderr:
+            print("grok stderr tail:", file=sys.stderr)
+            print(trim_text(grok_stderr, 2000), file=sys.stderr)
         sys.exit(1)
 
     # Cache like articles
@@ -508,6 +553,11 @@ def cmd_research(args):
         "retries": args.retries,
         "fetcher": "grok:research",
         "grok_returncode": grok_returncode,
+        "model": getattr(args, "model", None),
+        "effort": getattr(args, "effort", None),
+        "reasoning_effort": getattr(args, "reasoning_effort", None),
+        "session_id": getattr(args, "session_id", None),
+        "check": getattr(args, "check", False),
     }
     if grok_returncode != 0:
         metadata["warning"] = f"grok exited {grok_returncode}; research output may be partial"
@@ -576,7 +626,7 @@ def main():
     p_article.set_defaults(func=cmd_article)
 
     # research - X-first one-shot research via Grok (web + native X tools etc.)
-    p_research = sub.add_parser("research", help="One-shot Grok research optimized for X/frontier signals. Outputs Markdown and caches to .superx/research/.")
+    p_research = sub.add_parser("research", help="One-shot Grok research optimized for X/frontier signals. Outputs Markdown and caches to .superx/research/. Supports effort/model/session to approximate web 'expert mode'.")
     p_research.add_argument("query", help="Research question or task")
     p_research.add_argument("--max-turns", type=int, default=8, help="Max agent turns for research depth (default 8)")
     p_research.add_argument("--format", choices=["md", "json"], default="md")
@@ -586,6 +636,11 @@ def main():
     p_research.add_argument("--timeout", type=int, default=int(os.environ.get("SUPERX_RESEARCH_TIMEOUT", "900")), help="Grok subprocess timeout in seconds (default 900 or SUPERX_RESEARCH_TIMEOUT)")
     p_research.add_argument("--retries", type=int, default=int(os.environ.get("SUPERX_RESEARCH_RETRIES", "1")), help="Retry count when Grok returns no usable Markdown (default 1 or SUPERX_RESEARCH_RETRIES)")
     p_research.add_argument("--allow-partial", action="store_true", help="exit 0 even if grok exits non-zero after producing output")
+    p_research.add_argument("--model", help="Model to use (e.g. grok-build). See `grok models`")
+    p_research.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], help="Effort level (maps to web expert depth)")
+    p_research.add_argument("--reasoning-effort", dest="reasoning_effort", help="Reasoning effort for reasoning models")
+    p_research.add_argument("--session-id", dest="session_id", help="Existing Grok session ID to resume for follow-up research. Uses -r/--resume under the hood; this does not create a named session.")
+    p_research.add_argument("--check", action="store_true", help="Append self-verification loop (like expert double-check)")
     p_research.set_defaults(func=cmd_research)
 
     args = parser.parse_args()

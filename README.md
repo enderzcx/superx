@@ -182,6 +182,25 @@ superx research "Grok Build CLI 最新实践案例" --timeout 900 --retries 2 --
 
 `--output` 默认按 Markdown 文件路径处理；如果传入已存在的目录，或路径以 `/` 结尾，`superx` 会在该目录里生成自动命名的报告文件。
 
+更接近网页“专家模式”的一次性调研：
+
+```bash
+superx research "调研 AI agent 使用 Grok Build 原生 X 工具的最佳实践" \
+  --effort max \
+  --check \
+  --model grok-build \
+  --max-turns 10 \
+  --path-only
+```
+
+参数边界：
+
+- `--effort low|medium|high|xhigh|max` 会透传给 Grok CLI，适合控制调研深度。
+- `--check` 会追加自检 loop，通常需要更高的 `--max-turns`，建议 8 起步。
+- `--model` 可用 `grok models` 查看；当前本机看到 `grok-build` 和 `grok-composer-2.5-fast`。
+- `--session-id` 使用 Grok CLI 的 `-r/--resume`，只能恢复 `grok sessions list` 里已有的真实 session id，不会创建自定义命名 session。
+- `--reasoning-effort` 只适合支持 reasoning effort 的模型；当前 `grok-build` 会返回 400，不建议和默认模型一起使用。
+
 ## 没有 SuperGrok / X Premium+ 怎么办
 
 先讲清楚：没有 SuperGrok / X Premium+ 时，`superx user`、`superx keyword`、`superx semantic`、`superx thread` 这些 Grok-native 命令不可用。
@@ -265,7 +284,7 @@ superx semantic <query> [--limit N] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-
 superx keyword <query> [--limit N] [--mode Latest|Top] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]
 superx thread <post-id-or-status-url>
 superx article <post-id-or-status-url> [--format md|json] [--path-only] [--force] [--output PATH] [--cache-dir DIR] [--source-mode auto|grok|opencli]
-superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--allow-partial] [--output PATH] [--cache-dir DIR]
+superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--allow-partial] [--output PATH] [--cache-dir DIR] [--model MODEL] [--effort low|medium|high|xhigh|max] [--reasoning-effort EFFORT] [--session-id SESSION_ID] [--check]
 ```
 
 ## 常见问题
@@ -311,6 +330,18 @@ export SUPERX_RESEARCH_RETRIES=2
 superx research <query> --allow-partial
 ```
 
+### `--check` 后 max turns reached
+
+`--check` 会让 Grok 做额外自检，`--max-turns` 太低时容易提前结束。专家模式建议：
+
+```bash
+superx research <query> --effort max --check --max-turns 10
+```
+
+### `reasoningEffort` 400
+
+这表示当前模型不支持 `--reasoning-effort`。本机默认 `grok-build` 已实测会返回 400。去掉该参数，或换成真正支持 reasoning effort 的模型。
+
 ### `article` 只拿到一个 `t.co` 链接
 
 这通常是 X article 的壳内容。可以强制 OpenCLI 路径：
@@ -343,8 +374,10 @@ export SUPERX_CACHE_DIR="$HOME/.cache/superx"
 - `thread` 直接镜像 Grok 原生工具结果，字段可能随工具版本变化。
 - `article` 会把正文归一化为 Markdown，但不会下载媒体文件。
 - OpenCLI fallback 只覆盖当前 repo 内的 `article` 路径。
-- `research` 是一次性调研报告，不是 `crb` 那种可管理的协作桥；没有后台任务、状态查询、取消、连续追问。
+- `research` 是一次性调研报告，不是 `crb` 那种可管理的协作桥；没有后台任务、状态查询、取消。
+- `--session-id` 只能恢复已有 Grok session id，不会创建命名会话；网页式随意连续聊天仍然更适合未来 `grb` 或 Grok 网页。
 - `research` 没有 OpenCLI fallback；它依赖 Grok CLI，且使用原生 X 工具时仍受账号权限限制。
+- `--reasoning-effort` 取决于模型支持情况；当前 `grok-build` 不支持。
 - `research` 默认会对空输出重试 1 次；这只是处理 Grok CLI 偶发空 stdout，不是权限或 rate limit fallback。
 - `research` 遇到 Grok 非零退出码时会把已有内容标记为 partial；默认非零退出，`--allow-partial` 才会放行。
 - X 权限、内容可见性、账号状态、rate limit 都会影响结果。

@@ -20,6 +20,12 @@ class SuperxResearchTests(unittest.TestCase):
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
 
+    def make_fake_grok_script(self, directory: Path, script: str) -> Path:
+        path = directory / "fake-grok"
+        path.write_text(script, encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return path
+
     def run_superx(self, args, fake_grok: Path):
         env = os.environ.copy()
         env["GROK_BIN"] = str(fake_grok)
@@ -248,6 +254,89 @@ EOF
             self.assertEqual(proc.returncode, 127)
             self.assertIn("grok binary not found", proc.stderr)
             self.assertNotIn("Traceback", proc.stderr)
+
+    def test_research_metadata_records_expert_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake = self.make_fake_grok(tmp_path, "# Expert\n\n- ok\n")
+            output = tmp_path / "expert.md"
+
+            proc = self.run_superx(
+                [
+                    "research",
+                    "expert",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                    "--model",
+                    "fake-model",
+                    "--effort",
+                    "high",
+                    "--reasoning-effort",
+                    "high",
+                    "--session-id",
+                    "019e-session",
+                    "--check",
+                ],
+                fake,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            metadata = json.loads(proc.stdout)
+            self.assertEqual(metadata["model"], "fake-model")
+            self.assertEqual(metadata["effort"], "high")
+            self.assertEqual(metadata["reasoning_effort"], "high")
+            self.assertEqual(metadata["session_id"], "019e-session")
+            self.assertTrue(metadata["check"])
+
+    def test_research_empty_output_prints_stderr_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake = self.make_fake_grok_script(
+                tmp_path,
+                "#!/bin/sh\nprintf 'model does not support parameter reasoningEffort\\n' >&2\nexit 1\n",
+            )
+
+            proc = self.run_superx(["research", "empty stderr", "--retries", "0"], fake)
+
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("grok stderr tail", proc.stderr)
+            self.assertIn("reasoningEffort", proc.stderr)
+
+    def test_plain_runner_passes_expert_flags_with_resume(self):
+        import superx
+
+        completed = subprocess.CompletedProcess(
+            args=["grok"],
+            returncode=0,
+            stdout="# OK\n",
+            stderr="",
+        )
+        with mock.patch("superx.subprocess.run", return_value=completed) as run:
+            result = superx.run_grok_plain(
+                "prompt",
+                max_turns=9,
+                timeout=123,
+                model="grok-build",
+                effort="max",
+                reasoning_effort="high",
+                session_id="019e-session",
+                check=True,
+            )
+
+        cmd = run.call_args.args[0]
+        self.assertIn("-m", cmd)
+        self.assertIn("grok-build", cmd)
+        self.assertIn("--effort", cmd)
+        self.assertIn("max", cmd)
+        self.assertIn("--reasoning-effort", cmd)
+        self.assertIn("high", cmd)
+        self.assertIn("-r", cmd)
+        self.assertIn("019e-session", cmd)
+        self.assertNotIn("-s", cmd)
+        self.assertIn("--check", cmd)
+        self.assertEqual(result["text"], "# OK\n")
 
     def test_json_runner_does_not_add_internal_fields_by_default(self):
         import superx
