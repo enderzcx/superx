@@ -1,0 +1,50 @@
+{
+  "should_trigger": [
+    {
+      "text": "用 superx 搜一下最近 xAI 的 Grok 相关推文。",
+      "family": "x_keyword_search_cn"
+    },
+    {
+      "text": "Fetch this X thread and cache the article markdown locally.",
+      "family": "x_article_cache_en"
+    },
+    {
+      "text": "superx research 调研一下 2026 年 AI agent 在 X 上的最新实践。",
+      "family": "x_first_research_cn"
+    },
+    {
+      "text": "用 x_semantic_search 找一下关于 Codex workflow 的高相关推文。",
+      "family": "x_semantic_search_cn"
+    }
+  ],
+  "should_not_trigger": [
+    {
+      "text": "帮我写一条 X 帖，符合 Ender 的语气。",
+      "family": "x_writing"
+    },
+    {
+      "text": "去官网查 OpenAI API 最新价格。",
+      "family": "official_primary_research"
+    },
+    {
+      "text": "打开浏览器截图这个 X 页面。",
+      "family": "browser_screenshot"
+    },
+    {
+      "text": "和 Grok 持续协作开一个长会话。",
+      "family": "continuous_grok_bridge"
+    }
+  ],
+  "near_neighbors": [
+    {
+      "text": "抓这个已知 X URL 的正文和 replies。",
+      "expected_route": "superx article first, fetch-x fallback if Grok/opencli route fails",
+      "reason": "superx owns cached article/thread fetch when the local CLI can do it; fetch-x remains fallback for public proxy/browser-specific failures."
+    },
+    {
+      "text": "研究一个工具链，但 primary sources should be official docs, not X.",
+      "expected_route": "learn/read/web primary-source research",
+      "reason": "superx research is X-first/frontier research, not official-source-first due diligence."
+    }
+  ]
+}
