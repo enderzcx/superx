@@ -18,7 +18,7 @@ superx semantic <query> [--limit N] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-
 superx keyword <query> [--limit N] [--mode Latest|Top] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]
 superx thread <post-id-or-status-url>
 superx article <post-id-or-status-url> [--format md|json] [--path-only] [--force] [--output PATH] [--cache-dir DIR] [--source-mode auto|grok|opencli]
-superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--allow-partial] [--output PATH] [--cache-dir DIR] [--model MODEL] [--effort low|medium|high|xhigh|max] [--reasoning-effort EFFORT] [--session-id SESSION_ID] [--check]
+superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--allow-partial] [--output PATH] [--cache-dir DIR] [--model MODEL] [--effort low|medium|high|xhigh|max] [--reasoning-effort EFFORT] [--session-id SESSION_ID] [--no-check]
 ```
 
 ## Capability Boundaries
@@ -31,10 +31,14 @@ Do not overclaim.
 - `research` is one-shot Grok research for replacing the manual "Codex prompt -> web Grok -> paste back" loop. It is not a general Grok collaboration bridge.
 - `research` depends on local Grok CLI access. If it uses native X tools, the same SuperGrok / X Premium+ boundary applies.
 - `research` has no OpenCLI fallback and currently does not support background jobs, status/result/cancel, or durable managed collaboration.
-- Use `--effort max --check --max-turns 8+` for expert-style one-shot research. `--check` consumes extra Grok turns.
+- `research` defaults to heavy expert-style mode: `--effort max`, `--model grok-build`, self-check enabled, `--max-turns 30`, `--timeout 3600`.
+- Use `--no-check` or lower `--effort` only when intentionally making the run lighter. Raise `--max-turns 45+` only for unusually broad research.
 - `--session-id` resumes an existing Grok session via `-r/--resume`; it must be a real id from `grok sessions list` and does not create a named session.
 - `--reasoning-effort` only works on models that support it. Current local default `grok-build` rejects it with a 400.
-- `research` retries once by default only when Grok returns no usable Markdown. This is not a permissions, rate-limit, or no-membership fallback.
+- `research` retries once by default only when Grok returns no usable Markdown. If the previous attempt hit `Max turns reached`, retry 2 resumes the same/recent Grok session with `grok -r` and runs a finalize-only pass: no tools (`--tools ""`), self-check off, `--max-turns 6`, same effort/model, output Markdown only.
+- Do not run multiple `superx research` commands concurrently in the same cwd; the implicit `grok -r` finalizer resumes the most recent session for that cwd.
+- Empty-output failures save raw `.stdout`, `.stderr`, and `.json` attempt metadata under `.superx/research/_failed/`.
+- Successful metadata includes `attempt_details` with each attempt's profile, flags, return code, stderr tail, and output character counts.
 - If Grok exits non-zero or times out after producing output, `research` writes the Markdown and metadata with a partial warning, then exits non-zero unless `--allow-partial` is passed.
 - No-membership fallback means using open/public routes:
   - `r.jina.ai` for public tweet/status/article Markdown when it works.
@@ -82,7 +86,7 @@ python3 -m venv /tmp/superx-venv
 For deterministic research smoke without spending a live Grok call, run with a fake `GROK_BIN` that emits JSON and verify that `research --format json` writes both `.md` and `.json` artifacts. For live validation on this machine, only run:
 
 ```bash
-python3 superx.py research "test Grok connectivity" --max-turns 1 --timeout 30 --format json
+python3 superx.py research "test Grok connectivity" --no-check --effort low --max-turns 3 --timeout 60 --format json
 ```
 
 when Grok CLI access is expected to work.

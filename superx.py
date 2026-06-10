@@ -41,6 +41,9 @@ def resolve_bin(env_name: str, default_name: str) -> str:
 
 GROK_BIN = resolve_bin("GROK_BIN", "grok")
 OPENCLI_BIN = resolve_bin("OPENCLI_BIN", "opencli")
+# Native X tools (x_user_search, etc.) are only available on grok-build.
+# Grok Build 0.2.x defaults to grok-composer-2.5-fast, which lacks them.
+GROK_X_MODEL = os.environ.get("SUPERX_MODEL", "grok-build")
 
 
 def strip_ansi(value: str) -> str:
@@ -60,7 +63,14 @@ def coerce_text(value) -> str:
     return str(value)
 
 
-def run_grok_headless(prompt: str, max_turns: int = 4, timeout: int = 120, print_errors: bool = True, include_internal: bool = False) -> dict:
+def run_grok_headless(
+    prompt: str,
+    max_turns: int = 4,
+    timeout: int = 120,
+    print_errors: bool = True,
+    include_internal: bool = False,
+    model: str = None,
+) -> dict:
     """Run grok -p with yolo, capture the json output."""
     cmd = [
         GROK_BIN,
@@ -70,6 +80,8 @@ def run_grok_headless(prompt: str, max_turns: int = 4, timeout: int = 120, print
         "--max-turns", str(max_turns),
         "--no-auto-update",
     ]
+    if model or GROK_X_MODEL:
+        cmd.extend(["-m", model or GROK_X_MODEL])
     try:
         proc = subprocess.run(
             cmd,
@@ -121,6 +133,8 @@ def run_grok_plain(
     effort: str = None,
     reasoning_effort: str = None,
     session_id: str = None,
+    resume_recent: bool = False,
+    tools: str = None,
     check: bool = False,
 ) -> dict:
     cmd = [
@@ -138,6 +152,10 @@ def run_grok_plain(
         cmd.extend(["--reasoning-effort", reasoning_effort])
     if session_id:
         cmd.extend(["-r", session_id])  # resume an existing Grok session for follow-up
+    elif resume_recent:
+        cmd.append("-r")  # resume the most recent Grok session for this cwd
+    if tools is not None:
+        cmd.extend(["--tools", tools])
     if check:
         cmd.append("--check")  # self-verification loop, expert double-check
     try:
@@ -432,7 +450,7 @@ def clean_markdown_output(text: str) -> str:
     return text.strip()
 
 
-def build_research_prompt(query: str, *, effort: str = None, session_id: str = None) -> str:
+def build_research_prompt(query: str, *, effort: str = None, session_id: str = None, finalize_only: bool = False) -> str:
     """Turn headless grok into a one-shot (or session-continued) X-first researcher.
     The effort/session are mainly controlled at CLI level via --effort / --session-id,
     this prompt just sets the researcher persona and strict output contract.
@@ -443,6 +461,27 @@ def build_research_prompt(query: str, *, effort: str = None, session_id: str = N
     effort_note = ""
     if effort and effort in ("high", "xhigh", "max"):
         effort_note = f"\nYou are operating in high-effort mode ({effort}). Be especially thorough, consider edge cases, cross-verify aggressively, and produce deeper analysis."
+    if finalize_only:
+        return f"""You are resuming a previous Grok research session to produce the final report.
+
+Research task: {query}
+{context_note}
+
+Finalize-only rules:
+- Do NOT call tools.
+- Do NOT continue source discovery.
+- Use the existing session context, tool results, notes, and evidence already gathered.
+- If the previous research is incomplete, state the uncertainty plainly instead of doing more research.
+- Output ONLY the final report as clean, professional Markdown.
+- Do NOT prefix with "Here is the research report", "```markdown", or any meta text.
+- Structure with clear headings, e.g.:
+  # [Good Title]
+  ## Executive Summary
+  ## Key Findings
+  ## Detailed Insights / Analysis
+  ## Sources and References
+
+Start now. Emit only the Markdown report."""
 
     return f"""You are a world-class, thorough researcher helping a local coding agent.
 
@@ -459,6 +498,7 @@ Execution rules:
 - Prioritize primary sources, recent high-signal content, official docs, and direct data.
 - Cross-verify important claims.
 - Keep precise URLs for every key fact or quote.
+- Always reserve enough remaining turns for the final report. If the tool budget is running low, stop tool calls and write the best source-backed Markdown report possible.
 
 Output rules (strict):
 - When research is complete, output ONLY the final report as clean, professional Markdown.
@@ -477,6 +517,92 @@ Output rules (strict):
 Start now. Use tools when they are useful. When finished, emit only the Markdown."""
 
 
+def max_turns_reached(stderr: str) -> bool:
+    text = strip_ansi(stderr or "").lower()
+    return bool(re.search(r"(max(?:imum)?\s+turns?\s+(?:reached|exceeded))|(hit\s+max\s+turns?)", text))
+
+
+def research_profile(args, *, attempt: int, finalize_only: bool = False) -> dict:
+    if finalize_only:
+        return {
+            "attempt": attempt,
+            "profile": "resume-finalizer",
+            "max_turns": 6,
+            "timeout": min(args.timeout, 900),
+            "model": args.model,
+            "effort": args.effort,
+            "reasoning_effort": getattr(args, "reasoning_effort", None),
+            "session_id": getattr(args, "session_id", None),
+            "resume_recent": not bool(getattr(args, "session_id", None)),
+            "tools": "",
+            "check": False,
+            "finalize_only": True,
+        }
+    return {
+        "attempt": attempt,
+        "profile": "primary",
+        "max_turns": args.max_turns,
+        "timeout": args.timeout,
+        "model": args.model,
+        "effort": args.effort,
+        "reasoning_effort": getattr(args, "reasoning_effort", None),
+        "session_id": getattr(args, "session_id", None),
+        "resume_recent": False,
+        "tools": None,
+        "check": getattr(args, "check", False),
+        "finalize_only": False,
+    }
+
+
+def save_failed_research_artifacts(query: str, args, attempt_details: list) -> dict:
+    failed_dir = default_cache_dir(args.cache_dir) / "research" / "_failed"
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stem = f"{ts}-{safe_slug(query)}"
+    stdout_path = failed_dir / f"{stem}.stdout"
+    stderr_path = failed_dir / f"{stem}.stderr"
+    metadata_path = failed_dir / f"{stem}.json"
+
+    stdout_sections = []
+    stderr_sections = []
+    for detail in attempt_details:
+        label = f"attempt {detail['attempt']} ({detail['profile']})"
+        stdout_sections.append(f"===== {label} stdout =====\n{detail.get('stdout', '')}")
+        stderr_sections.append(f"===== {label} stderr =====\n{detail.get('stderr', '')}")
+    stdout_path.write_text("\n\n".join(stdout_sections), encoding="utf-8")
+    stderr_path.write_text("\n\n".join(stderr_sections), encoding="utf-8")
+
+    metadata = {
+        "query": query,
+        "failed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "fetcher": "grok:research",
+        "failure": "empty_output",
+        "attempts": len(attempt_details),
+        "stdout_path": str(stdout_path),
+        "stderr_path": str(stderr_path),
+        "metadata_path": str(metadata_path),
+        "requested_output": getattr(args, "output", None),
+        "path_only": getattr(args, "path_only", False),
+        "format": getattr(args, "format", None),
+        "attempt_details": [
+            {k: v for k, v in detail.items() if k not in ("stdout", "stderr")}
+            for detail in attempt_details
+        ],
+    }
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    return metadata
+
+
+def research_empty_output_hint(attempt_details: list) -> str:
+    saw_max_turns = any(max_turns_reached(detail.get("stderr", "")) for detail in attempt_details)
+    tried_finalizer = any(detail.get("profile") == "resume-finalizer" for detail in attempt_details)
+    if saw_max_turns and tried_finalizer:
+        return "max turns reached; resume-finalizer already tried. Try a narrower query, higher --max-turns, or inspect the saved Grok session/failed artifacts."
+    if saw_max_turns:
+        return "max turns reached before final Markdown. Leave default retries enabled so superx can resume the same Grok session and run a finalize-only pass."
+    return "try a narrower query, higher --max-turns, or inspect the saved failed artifacts."
+
+
 def cmd_research(args):
     query = args.query.strip()
     if not query:
@@ -489,37 +615,61 @@ def cmd_research(args):
         print("Error: --retries must be >= 0", file=sys.stderr)
         sys.exit(2)
 
-    prompt = build_research_prompt(
-        query,
-        effort=getattr(args, 'effort', None),
-        session_id=getattr(args, 'session_id', None),
-    )
     res = {}
     text = ""
+    attempt_details = []
     attempts = args.retries + 1
+    previous_max_turns_reached = False
     for attempt in range(1, attempts + 1):
+        finalize_only = attempt > 1 and previous_max_turns_reached
+        profile = research_profile(args, attempt=attempt, finalize_only=finalize_only)
+        prompt = build_research_prompt(
+            query,
+            effort=profile["effort"],
+            session_id=profile["session_id"],
+            finalize_only=profile["finalize_only"],
+        )
         res = run_grok_plain(
             prompt,
-            max_turns=args.max_turns,
-            timeout=args.timeout,
-            model=args.model,
-            effort=args.effort,
-            reasoning_effort=getattr(args, 'reasoning_effort', None),
-            session_id=getattr(args, 'session_id', None),
-            check=getattr(args, 'check', False),
+            max_turns=profile["max_turns"],
+            timeout=profile["timeout"],
+            model=profile["model"],
+            effort=profile["effort"],
+            reasoning_effort=profile["reasoning_effort"],
+            session_id=profile["session_id"],
+            resume_recent=profile["resume_recent"],
+            tools=profile["tools"],
+            check=profile["check"],
         )
-        text = clean_markdown_output(extract_text(res))
+        raw_text = extract_text(res)
+        text = clean_markdown_output(raw_text)
+        detail = {
+            **profile,
+            "returncode": int(res.get("_superx_grok_returncode", 0) or 0) if isinstance(res, dict) else 0,
+            "stdout_chars": len(raw_text or ""),
+            "markdown_chars": len(text or ""),
+            "stderr_tail": trim_text(res.get("_superx_grok_stderr", ""), 2000) if isinstance(res, dict) else "",
+            "max_turns_reached": max_turns_reached(res.get("_superx_grok_stderr", "")) if isinstance(res, dict) else False,
+            "stdout": raw_text or "",
+            "stderr": res.get("_superx_grok_stderr", "") if isinstance(res, dict) else "",
+        }
+        attempt_details.append(detail)
         if isinstance(res, dict) and int(res.get("_superx_grok_returncode", 0) or 0) == 127:
             break
         if text or attempt == attempts:
             break
+        previous_max_turns_reached = detail["max_turns_reached"]
     grok_returncode = int(res.get("_superx_grok_returncode", 0) or 0) if isinstance(res, dict) else 0
     grok_stderr = res.get("_superx_grok_stderr", "") if isinstance(res, dict) else ""
     if not text:
+        failure = save_failed_research_artifacts(query, args, attempt_details)
         if grok_returncode == 127 and grok_stderr:
             print(f"Error: {grok_stderr}", file=sys.stderr)
+            print(f"Saved failed research artifacts: {failure['metadata_path']}", file=sys.stderr)
             sys.exit(127)
-        print(f"Error: grok research returned empty output after {attempts} attempt(s)", file=sys.stderr)
+        print(f"Error: grok research returned empty output after {len(attempt_details)} attempt(s)", file=sys.stderr)
+        print(f"Hint: {research_empty_output_hint(attempt_details)}", file=sys.stderr)
+        print(f"Saved failed research artifacts: {failure['metadata_path']}", file=sys.stderr)
         if grok_stderr:
             print("grok stderr tail:", file=sys.stderr)
             print(trim_text(grok_stderr, 2000), file=sys.stderr)
@@ -558,6 +708,10 @@ def cmd_research(args):
         "reasoning_effort": getattr(args, "reasoning_effort", None),
         "session_id": getattr(args, "session_id", None),
         "check": getattr(args, "check", False),
+        "attempt_details": [
+            {k: v for k, v in detail.items() if k not in ("stdout", "stderr")}
+            for detail in attempt_details
+        ],
     }
     if grok_returncode != 0:
         metadata["warning"] = f"grok exited {grok_returncode}; research output may be partial"
@@ -628,19 +782,19 @@ def main():
     # research - X-first one-shot research via Grok (web + native X tools etc.)
     p_research = sub.add_parser("research", help="One-shot Grok research optimized for X/frontier signals. Outputs Markdown and caches to .superx/research/. Supports effort/model/session to approximate web 'expert mode'.")
     p_research.add_argument("query", help="Research question or task")
-    p_research.add_argument("--max-turns", type=int, default=8, help="Max agent turns for research depth (default 8)")
+    p_research.add_argument("--max-turns", type=int, default=int(os.environ.get("SUPERX_RESEARCH_MAX_TURNS", "30")), help="Max agent turns for the primary heavy run (default 30 or SUPERX_RESEARCH_MAX_TURNS)")
     p_research.add_argument("--format", choices=["md", "json"], default="md")
     p_research.add_argument("--output", help="Custom output .md file path; existing directories or trailing slashes receive an auto-named file. Defaults to ./.superx/research/<ts>-<slug>.md")
     p_research.add_argument("--cache-dir", help="Cache root. Defaults to ./.superx or SUPERX_CACHE_DIR")
     p_research.add_argument("--path-only", action="store_true", help="print only the saved Markdown path")
-    p_research.add_argument("--timeout", type=int, default=int(os.environ.get("SUPERX_RESEARCH_TIMEOUT", "900")), help="Grok subprocess timeout in seconds (default 900 or SUPERX_RESEARCH_TIMEOUT)")
-    p_research.add_argument("--retries", type=int, default=int(os.environ.get("SUPERX_RESEARCH_RETRIES", "1")), help="Retry count when Grok returns no usable Markdown (default 1 or SUPERX_RESEARCH_RETRIES)")
+    p_research.add_argument("--timeout", type=int, default=int(os.environ.get("SUPERX_RESEARCH_TIMEOUT", "3600")), help="Grok subprocess timeout in seconds for the primary heavy run (default 3600 or SUPERX_RESEARCH_TIMEOUT)")
+    p_research.add_argument("--retries", type=int, default=int(os.environ.get("SUPERX_RESEARCH_RETRIES", "1")), help="Continuation/finalization attempts when Grok returns no usable Markdown (default 1 or SUPERX_RESEARCH_RETRIES)")
     p_research.add_argument("--allow-partial", action="store_true", help="exit 0 even if grok exits non-zero after producing output")
-    p_research.add_argument("--model", help="Model to use (e.g. grok-build). See `grok models`")
-    p_research.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], help="Effort level (maps to web expert depth)")
-    p_research.add_argument("--reasoning-effort", dest="reasoning_effort", help="Reasoning effort for reasoning models")
-    p_research.add_argument("--session-id", dest="session_id", help="Existing Grok session ID to resume for follow-up research. Uses -r/--resume under the hood; this does not create a named session.")
-    p_research.add_argument("--check", action="store_true", help="Append self-verification loop (like expert double-check)")
+    p_research.add_argument("--model", default="grok-build", help="Model to use (default grok-build for heavy research; see `grok models`)")
+    p_research.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default="max", help="Effort level (default max for heavy/expert-like research)")
+    p_research.add_argument("--reasoning-effort", dest="reasoning_effort", help="Reasoning effort (only for models that support it; grok-build does not)")
+    p_research.add_argument("--session-id", dest="session_id", help="Existing Grok session ID (from `grok sessions list`) to resume for follow-up. Uses --resume; cannot create arbitrary names.")
+    p_research.add_argument("--no-check", dest="check", action="store_false", default=True, help="Disable self-verification loop (enabled by default for heavy research)")
     p_research.set_defaults(func=cmd_research)
 
     args = parser.parse_args()

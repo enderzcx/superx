@@ -52,7 +52,7 @@ superx article <url> --source-mode opencli
 
 `superx research` 是一次性 Grok 调研入口，用来替代“Codex 写 prompt -> 你复制到网页版 Grok -> 再复制结果回来”的中转流程。它会调用本地 Grok CLI，由 Grok 自己决定使用 web、open_page、原生 X 工具等能力，最后输出 Markdown 报告。
 
-注意：`research` 不是通用 Grok 协作桥。它没有 background job、`status/result/cancel`、follow-up session 或多轮连续上下文；这些会留给未来单独的 `grb` / Grok bridge。`research` 也没有 OpenCLI fallback；如果 Grok 调研过程中使用原生 X 工具，同样受 SuperGrok / X Premium+ 和 Grok Build 可用性限制。
+注意：`research` 不是通用 Grok 协作桥。它没有 background job、`status/result/cancel` 这类任务管理能力；`--session-id` 只能恢复 Grok 已有 session id，不能创建自定义命名会话。`research` 也没有 OpenCLI fallback；如果 Grok 调研过程中使用原生 X 工具，同样受 SuperGrok / X Premium+ 和 Grok Build 可用性限制。
 
 ## 安装
 
@@ -156,11 +156,15 @@ superx article 'https://x.com/0xenderzcx/status/2061778310934516097?s=20' --forc
 superx article 'https://x.com/0xenderzcx/status/2061778310934516097?s=20' --source-mode opencli
 ```
 
-让 Grok 做一次性调研，并把报告保存到 `.superx/research/`：
+让 Grok 做一次性调研，并把报告保存到 `.superx/research/`。现在默认就是重度专家模式：
 
 ```bash
-superx research "调研 Grok Build 原生 X 工具如何改变本地 Agent 工作流" --max-turns 8
+superx research "调研 Grok Build 原生 X 工具如何改变本地 Agent 工作流"
 ```
+
+默认参数：`--max-turns 30`、`--timeout 3600`、`--model grok-build`、`--effort max`、自检开启。自检会让 Grok 在最终输出前多做一轮检查。
+
+如果第一轮因为 `Max turns reached` 没有产出可保存 Markdown，默认第二轮会接上同一个工作目录里的 Grok 最近 session（等价 `grok -r`）做 finalize-only：禁用工具（`--tools ""`）、不继续找资料、关闭自检、`--max-turns 6`、保留原 effort/model，只把已有上下文整理成 Markdown。
 
 只返回保存后的 Markdown 路径，方便 Codex 继续读取：
 
@@ -174,32 +178,36 @@ superx research "最近 X 上关于本地 AI agent 的高信号讨论" --path-on
 superx research "SuperX 和 OpenCLI 的能力边界怎么写清楚" --format json
 ```
 
-自定义超时或保存位置：
+自定义保存位置，或给特别宽的题目继续加预算：
 
 ```bash
-superx research "Grok Build CLI 最新实践案例" --timeout 900 --retries 2 --output ./notes/grok-build-research.md
+superx research "Grok Build CLI 最新实践案例" --output ./notes/grok-build-research.md
+superx research "跨多个生态调研 agent harness 设计" --timeout 5400 --max-turns 45
 ```
 
 `--output` 默认按 Markdown 文件路径处理；如果传入已存在的目录，或路径以 `/` 结尾，`superx` 会在该目录里生成自动命名的报告文件。
 
-更接近网页“专家模式”的一次性调研：
+默认已经给足重度预算。只有题目特别宽时再提高 turns：
 
 ```bash
-superx research "调研 AI agent 使用 Grok Build 原生 X 工具的最佳实践" \
-  --effort max \
-  --check \
-  --model grok-build \
-  --max-turns 10 \
-  --path-only
+superx research "调研 AI agent 使用 Grok Build 原生 X 工具的最佳实践" --max-turns 45 --path-only
+```
+
+想轻一点可以关闭自检或降低 effort：
+
+```bash
+superx research "快速了解 X 上关于 Grok Build 的最新讨论" --no-check --effort high
 ```
 
 参数边界：
 
-- `--effort low|medium|high|xhigh|max` 会透传给 Grok CLI，适合控制调研深度。
-- `--check` 会追加自检 loop，通常需要更高的 `--max-turns`，建议 8 起步。
-- `--model` 可用 `grok models` 查看；当前本机看到 `grok-build` 和 `grok-composer-2.5-fast`。
+- `--effort low|medium|high|xhigh|max` 会透传给 Grok CLI，默认 `max`。
+- `--no-check` 会关闭默认自检；默认开启自检，建议保留给重度调研。
+- `--model` 可用 `grok models` 查看；默认 `grok-build`，当前本机也看到 `grok-composer-2.5-fast`。
 - `--session-id` 使用 Grok CLI 的 `-r/--resume`，只能恢复 `grok sessions list` 里已有的真实 session id，不会创建自定义命名 session。
 - `--reasoning-effort` 只适合支持 reasoning effort 的模型；当前 `grok-build` 会返回 400，不建议和默认模型一起使用。
+- `--retries` 只处理“没有可保存 Markdown”的情况；默认 `1` 表示 heavy 尝试命中 `Max turns reached` 后自动接同一个 Grok session 做 finalize-only。它不是账号权限、rate limit 或无会员 fallback。
+- 不要在同一个工作目录里并发跑多个 `superx research`；默认 finalizer 使用裸 `grok -r`，会恢复该 cwd 最近 session。
 
 ## 没有 SuperGrok / X Premium+ 怎么办
 
@@ -258,9 +266,13 @@ your-project/
     research/
       20260604-020000-grok-build-x-tools.md
       20260604-020000-grok-build-x-tools.json
+      _failed/
+        20260604-021500-wide-topic.stdout
+        20260604-021500-wide-topic.stderr
+        20260604-021500-wide-topic.json
 ```
 
-其中 `.md` 是报告正文，`.json` 是 metadata，包含 query、路径、时间、turns、timeout、attempts 等信息。
+其中 `.md` 是报告正文，旁边 `.json` 是 metadata，包含 query、路径、时间、turns、timeout、attempts、model、effort、session、check 和 `attempt_details`。连续空输出失败时不会假装成功，会把每轮 raw stdout/stderr 和 attempt metadata 写到 `_failed/`。
 
 ## Agent 用法
 
@@ -284,7 +296,7 @@ superx semantic <query> [--limit N] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-
 superx keyword <query> [--limit N] [--mode Latest|Top] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]
 superx thread <post-id-or-status-url>
 superx article <post-id-or-status-url> [--format md|json] [--path-only] [--force] [--output PATH] [--cache-dir DIR] [--source-mode auto|grok|opencli]
-superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--allow-partial] [--output PATH] [--cache-dir DIR] [--model MODEL] [--effort low|medium|high|xhigh|max] [--reasoning-effort EFFORT] [--session-id SESSION_ID] [--check]
+superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--allow-partial] [--output PATH] [--cache-dir DIR] [--model MODEL] [--effort low|medium|high|xhigh|max] [--reasoning-effort EFFORT] [--session-id SESSION_ID] [--no-check]
 ```
 
 ## 常见问题
@@ -303,26 +315,27 @@ superx research <query> [--max-turns N] [--format md|json] [--path-only] [--time
 superx article <url> --source-mode opencli
 ```
 
-如果是 `research` 超时，可以提高超时或降低 turns：
+如果是 `research` 超时，可以提高超时，或在确实只要轻量结果时降低 turns：
 
 ```bash
-superx research <query> --timeout 1200 --max-turns 6
+superx research <query> --timeout 5400 --max-turns 45
+superx research <query> --no-check --effort high --max-turns 12
 ```
 
 也可以设置环境变量：
 
 ```bash
-export SUPERX_RESEARCH_TIMEOUT=1200
+export SUPERX_RESEARCH_TIMEOUT=5400
 ```
 
-如果 Grok CLI 偶发返回空输出，`superx research` 默认会重试 1 次。可以显式调整：
+如果 Grok CLI 命中 `Max turns reached` 后没有最终 Markdown，`superx research` 默认会重试 1 次。第二轮会自动 resume 最近 Grok session 做 finalize-only：禁用工具，只把已收集上下文整理成最终报告。可以显式调整：
 
 ```bash
 superx research <query> --retries 2
 export SUPERX_RESEARCH_RETRIES=2
 ```
 
-`--retries` 只处理“没有可保存 Markdown”的情况，不能替代账号权限、rate limit 或内容可见性。
+`--retries` 只处理“没有可保存 Markdown”的情况，不能替代账号权限、rate limit 或内容可见性。连续失败时查看 `.superx/research/_failed/*.json`、`.stdout`、`.stderr` 复盘每轮参数和 Grok 原始输出。
 
 如果 Grok 已经产出内容但 CLI 返回非零退出码（例如 `max turns reached` 或 timeout），`superx research` 会保存 Markdown 和 metadata，并默认用非零码退出。确认要接受 partial 结果时加：
 
@@ -330,12 +343,18 @@ export SUPERX_RESEARCH_RETRIES=2
 superx research <query> --allow-partial
 ```
 
-### `--check` 后 max turns reached
+### 自检后 max turns reached
 
-`--check` 会让 Grok 做额外自检，`--max-turns` 太低时容易提前结束。专家模式建议：
+默认自检会消耗额外 turns，但默认已经是 30 turns / 3600s。更复杂的调研可以提高到 45：
 
 ```bash
-superx research <query> --effort max --check --max-turns 10
+superx research <query> --max-turns 45
+```
+
+如果看到 empty output，保持默认 retries 通常会自动跑 resume-finalizer。手动收口最近 Grok session 可以用：
+
+```bash
+grok -r -p "Use the existing session context only. Do not call tools. Output the final report as Markdown." --yolo --max-turns 6 --no-auto-update
 ```
 
 ### `reasoningEffort` 400
@@ -378,7 +397,7 @@ export SUPERX_CACHE_DIR="$HOME/.cache/superx"
 - `--session-id` 只能恢复已有 Grok session id，不会创建命名会话；网页式随意连续聊天仍然更适合未来 `grb` 或 Grok 网页。
 - `research` 没有 OpenCLI fallback；它依赖 Grok CLI，且使用原生 X 工具时仍受账号权限限制。
 - `--reasoning-effort` 取决于模型支持情况；当前 `grok-build` 不支持。
-- `research` 默认会对空输出重试 1 次；这只是处理 Grok CLI 偶发空 stdout，不是权限或 rate limit fallback。
+- `research` 默认会对 max-turns 后的空输出重试 1 次；第二轮 resume 最近 Grok session 做 finalize-only，并传 `--tools ""` 禁用工具，不是权限或 rate limit fallback。
 - `research` 遇到 Grok 非零退出码时会把已有内容标记为 partial；默认非零退出，`--allow-partial` 才会放行。
 - X 权限、内容可见性、账号状态、rate limit 都会影响结果。
 
