@@ -18,7 +18,8 @@ superx semantic <query> [--limit N] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-
 superx keyword <query> [--limit N] [--mode Latest|Top] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]
 superx thread <post-id-or-status-url>
 superx article <post-id-or-status-url> [--format md|json] [--path-only] [--force] [--output PATH] [--cache-dir DIR] [--source-mode auto|grok|opencli]
-superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--allow-partial] [--output PATH] [--cache-dir DIR] [--model MODEL] [--effort low|medium|high|xhigh|max] [--reasoning-effort EFFORT] [--session-id SESSION_ID] [--no-check]
+superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--no-retry] [--allow-partial] [--output PATH] [--cache-dir DIR] [--model MODEL] [--effort low|medium|high|xhigh|max] [--best-of-n N] [--reasoning-effort EFFORT] [--session-id SESSION_ID] [--tools TOOLS] [--disallowed-tools TOOLS] [--disable-web-search] [--finalize-only] [--no-check]
+superx doctor [--format text|json] [--model MODEL] [--probe-x-tools] [--timeout SEC] [--no-update-check]
 ```
 
 ## Capability Boundaries
@@ -33,13 +34,18 @@ Do not overclaim.
 - `research` has no OpenCLI fallback and currently does not support background jobs, status/result/cancel, or durable managed collaboration.
 - `research` defaults to heavy expert-style mode: `--effort max`, `--model grok-build`, self-check enabled, `--max-turns 30`, `--timeout 3600`.
 - Use `--no-check` or lower `--effort` only when intentionally making the run lighter. Raise `--max-turns 45+` only for unusually broad research.
+- Use `--best-of-n N` only when intentionally asking Grok CLI to run a best-of-N subagent tournament. Start with 4 before requesting 16; the actual fan-out may be capped by Grok CLI. It is slower, more expensive, and works best from a real git worktree. It is not a model id.
+- `--tools`, `--disallowed-tools`, and `--disable-web-search` are advanced primary-run Grok CLI controls. They do not apply to automatic or manual finalizers.
 - `--session-id` resumes an existing Grok session via `-r/--resume`; it must be a real id from `grok sessions list` and does not create a named session.
 - `--reasoning-effort` only works on models that support it. Current local default `grok-build` rejects it with a 400.
 - `research` retries once by default only when Grok returns no usable Markdown. If the previous attempt hit `Max turns reached`, retry 2 resumes the same/recent Grok session with `grok -r` and runs a finalize-only pass: no tools (`--tools ""`), self-check off, `--max-turns 6`, same effort/model, output Markdown only.
+- `--no-retry` disables the automatic empty-output/max-turns resume-finalizer.
+- `--finalize-only` resumes an existing/recent Grok session and only produces the final Markdown report: no tools, no discovery, no retry. Do not combine it with `--best-of-n`.
 - Do not run multiple `superx research` commands concurrently in the same cwd; the implicit `grok -r` finalizer resumes the most recent session for that cwd.
 - Empty-output failures save raw `.stdout`, `.stderr`, and `.json` attempt metadata under `.superx/research/_failed/`.
 - Successful metadata includes `attempt_details` with each attempt's profile, flags, return code, stderr tail, and output character counts.
 - If Grok exits non-zero or times out after producing output, `research` writes the Markdown and metadata with a partial warning, then exits non-zero unless `--allow-partial` is passed.
+- `doctor` is diagnostic only. It checks local `grok`, `opencli`, `grok version`, `grok models`, update status, and optionally probes native X tools with a live Grok call. It does not bypass subscription or model/tool limits.
 - No-membership fallback means using open/public routes:
   - `r.jina.ai` for public tweet/status/article Markdown when it works.
   - `opencli twitter thread|article|profile|search` with ordinary local Chrome/X login and Browser Bridge.
@@ -73,14 +79,16 @@ Rules:
 Before saying a code/docs change is done, run the relevant checks:
 
 ```bash
-python3 -m py_compile superx.py
+python3 -m py_compile superx.py skills/superx/scripts/superx.py /Users/sunny/.agents/skills/superx/scripts/superx.py
 python3 -m unittest discover -s tests
 python3 superx.py --help
 python3 superx.py research --help
+python3 superx.py doctor --format json --no-update-check
 python3 superx.py article 'https://x.com/0xenderzcx/status/2061778378089533835?s=20' --format json
 python3 -m venv /tmp/superx-venv
 /tmp/superx-venv/bin/python -m pip install .
 /tmp/superx-venv/bin/superx --help
+/tmp/superx-venv/bin/superx doctor --format json --no-update-check
 ```
 
 For deterministic research smoke without spending a live Grok call, run with a fake `GROK_BIN` that emits JSON and verify that `research --format json` writes both `.md` and `.json` artifacts. For live validation on this machine, only run:
@@ -96,6 +104,12 @@ For README or public copy changes, also scan for stale names and overclaims:
 ```bash
 rg -n "x-hound|grok-x|GROK_X|\\.x-hound|绕过|免费调用|不需要会员|万能 Grok|通用 Grok bridge" .
 ```
+
+## Source Of Truth
+
+- Root `superx.py` is the canonical implementation.
+- `skills/superx/scripts/superx.py` is a thin launcher into the root implementation; keep it executable, but do not reintroduce a copied wrapper body there.
+- The installed local skill launcher may point at this repo through `SUPERX_SOURCE` or its default local path. If this repo moves, update the launcher env/path and rerun the development checks.
 
 ## Publishing Rules
 

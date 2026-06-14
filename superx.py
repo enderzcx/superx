@@ -43,7 +43,7 @@ GROK_BIN = resolve_bin("GROK_BIN", "grok")
 OPENCLI_BIN = resolve_bin("OPENCLI_BIN", "opencli")
 # Native X tools (x_user_search, etc.) are only available on grok-build.
 # Grok Build 0.2.x defaults to grok-composer-2.5-fast, which lacks them.
-GROK_X_MODEL = os.environ.get("SUPERX_MODEL", "grok-build")
+SUPERX_MODEL = os.environ.get("SUPERX_MODEL", "grok-build")
 
 
 def strip_ansi(value: str) -> str:
@@ -80,8 +80,8 @@ def run_grok_headless(
         "--max-turns", str(max_turns),
         "--no-auto-update",
     ]
-    if model or GROK_X_MODEL:
-        cmd.extend(["-m", model or GROK_X_MODEL])
+    if model or SUPERX_MODEL:
+        cmd.extend(["-m", model or SUPERX_MODEL])
     try:
         proc = subprocess.run(
             cmd,
@@ -131,10 +131,13 @@ def run_grok_plain(
     timeout: int = 900,
     model: str = None,
     effort: str = None,
+    best_of_n: int = None,
     reasoning_effort: str = None,
     session_id: str = None,
     resume_recent: bool = False,
     tools: str = None,
+    disallowed_tools: str = None,
+    disable_web_search: bool = False,
     check: bool = False,
 ) -> dict:
     cmd = [
@@ -148,6 +151,8 @@ def run_grok_plain(
         cmd.extend(["-m", model])
     if effort:
         cmd.extend(["--effort", effort])
+    if best_of_n:
+        cmd.extend(["--best-of-n", str(best_of_n)])
     if reasoning_effort:
         cmd.extend(["--reasoning-effort", reasoning_effort])
     if session_id:
@@ -156,6 +161,10 @@ def run_grok_plain(
         cmd.append("-r")  # resume the most recent Grok session for this cwd
     if tools is not None:
         cmd.extend(["--tools", tools])
+    if disallowed_tools:
+        cmd.extend(["--disallowed-tools", disallowed_tools])
+    if disable_web_search:
+        cmd.append("--disable-web-search")
     if check:
         cmd.append("--check")  # self-verification loop, expert double-check
     try:
@@ -325,6 +334,148 @@ def fetch_thread_data(post_id: str) -> dict:
     res = run_grok_headless(prompt)
     text = extract_text(res)
     return parse_json_text(text)
+
+
+def run_simple_command(cmd: list, timeout: int = 30) -> dict:
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return {
+            "cmd": cmd,
+            "returncode": proc.returncode,
+            "stdout": trim_text(proc.stdout.strip(), 4000),
+            "stderr": trim_text(proc.stderr.strip(), 4000),
+        }
+    except FileNotFoundError:
+        return {"cmd": cmd, "returncode": 127, "stdout": "", "stderr": f"binary not found: {cmd[0]}"}
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "cmd": cmd,
+            "returncode": 124,
+            "stdout": trim_text(coerce_text(getattr(exc, "stdout", None)), 4000),
+            "stderr": trim_text(coerce_text(getattr(exc, "stderr", None)) or f"timed out after {timeout}s", 4000),
+        }
+
+
+def parse_grok_models(stdout: str) -> dict:
+    models = []
+    default = None
+    for line in (stdout or "").splitlines():
+        stripped = strip_ansi(line).strip()
+        if stripped.startswith("Default model:"):
+            default = stripped.split(":", 1)[1].strip()
+        match = re.match(r"^[*-]\s+([^\s]+)", stripped)
+        if match:
+            model = match.group(1)
+            models.append(model)
+            if stripped.startswith("*"):
+                default = model
+    return {"default": default, "models": models}
+
+
+def probe_x_tools(model: str, timeout: int = 120) -> dict:
+    expected = ["x_user_search", "x_semantic_search", "x_keyword_search", "x_thread_fetch"]
+    prompt = (
+        "List every built-in tool name available to you. "
+        "Output ONLY a compact JSON array of strings, no markdown and no prose."
+    )
+    cmd = [
+        GROK_BIN,
+        "-m",
+        model,
+        "-p",
+        prompt,
+        "--yolo",
+        "--max-turns",
+        "2",
+        "--no-auto-update",
+        "--output-format",
+        "json",
+    ]
+    result = run_simple_command(cmd, timeout=timeout)
+    text = ""
+    tools = []
+    if result["stdout"]:
+        try:
+            data = json.loads(result["stdout"])
+            text = data.get("text", "") if isinstance(data, dict) else str(data)
+        except json.JSONDecodeError:
+            text = result["stdout"]
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            tools = [str(item) for item in parsed]
+    except Exception:
+        tools = sorted(set(re.findall(r"\bx_[a-z_]+\b", text or "")))
+    result.update(
+        {
+            "model": model,
+            "tools": tools,
+            "expected_x_tools": expected,
+            "missing_x_tools": [tool for tool in expected if tool not in tools],
+            "x_tools_available": all(tool in tools for tool in expected),
+        }
+    )
+    return result
+
+
+def cmd_doctor(args):
+    grok_path = shutil.which(GROK_BIN) or (GROK_BIN if Path(GROK_BIN).exists() else None)
+    opencli_path = shutil.which(OPENCLI_BIN) or (OPENCLI_BIN if Path(OPENCLI_BIN).exists() else None)
+    report = {
+        "status": "ok",
+        "grok_bin": GROK_BIN,
+        "grok_path": grok_path,
+        "opencli_bin": OPENCLI_BIN,
+        "opencli_path": opencli_path,
+        "python": sys.version.split()[0],
+        "cwd": str(Path.cwd()),
+        "configured_x_model": SUPERX_MODEL,
+    }
+    report["grok_version"] = run_simple_command([GROK_BIN, "version"], timeout=20)
+    report["grok_models"] = run_simple_command([GROK_BIN, "models"], timeout=60)
+    report["parsed_models"] = parse_grok_models(report["grok_models"].get("stdout", ""))
+    if not args.no_update_check:
+        update = run_simple_command([GROK_BIN, "update", "--check", "--json"], timeout=60)
+        if update.get("stdout"):
+            try:
+                update["json"] = json.loads(update["stdout"])
+            except json.JSONDecodeError:
+                pass
+        report["grok_update"] = update
+    if args.probe_x_tools:
+        report["x_tool_probe"] = probe_x_tools(args.model, timeout=args.timeout)
+    problems = []
+    if not grok_path:
+        problems.append("grok binary not found")
+    if report["grok_version"]["returncode"] != 0:
+        problems.append("grok version failed")
+    if args.probe_x_tools and not report.get("x_tool_probe", {}).get("x_tools_available"):
+        problems.append("expected Grok native X tools not all available")
+    if problems:
+        report["status"] = "degraded"
+        report["problems"] = problems
+    if args.format == "json":
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    print(f"superx doctor: {report['status']}")
+    print(f"- grok: {grok_path or 'missing'}")
+    print(f"- grok version: {report['grok_version'].get('stdout') or report['grok_version'].get('stderr')}")
+    print(f"- models: {', '.join(report['parsed_models'].get('models') or []) or 'unknown'}")
+    print(f"- default model: {report['parsed_models'].get('default') or 'unknown'}")
+    print(f"- opencli: {opencli_path or 'missing'}")
+    if "grok_update" in report:
+        update_json = report["grok_update"].get("json") or {}
+        if update_json:
+            print(f"- update: current={update_json.get('currentVersion')} latest={update_json.get('latestVersion')} available={update_json.get('updateAvailable')}")
+    if "x_tool_probe" in report:
+        probe = report["x_tool_probe"]
+        print(f"- x tools available: {probe.get('x_tools_available')}")
+        if probe.get("missing_x_tools"):
+            print(f"- missing x tools: {', '.join(probe['missing_x_tools'])}")
+    if problems:
+        print("- problems:")
+        for problem in problems:
+            print(f"  - {problem}")
 
 def cmd_user(args):
     params = {"query": args.query, "count": args.count}
@@ -522,19 +673,22 @@ def max_turns_reached(stderr: str) -> bool:
     return bool(re.search(r"(max(?:imum)?\s+turns?\s+(?:reached|exceeded))|(hit\s+max\s+turns?)", text))
 
 
-def research_profile(args, *, attempt: int, finalize_only: bool = False) -> dict:
+def research_profile(args, *, attempt: int, finalize_only: bool = False, manual_finalize: bool = False) -> dict:
     if finalize_only:
         return {
             "attempt": attempt,
-            "profile": "resume-finalizer",
-            "max_turns": 6,
-            "timeout": min(args.timeout, 900),
+            "profile": "manual-finalizer" if manual_finalize else "resume-finalizer",
+            "max_turns": args.max_turns if manual_finalize else 6,
+            "timeout": args.timeout if manual_finalize else min(args.timeout, 900),
             "model": args.model,
             "effort": args.effort,
+            "best_of_n": None,
             "reasoning_effort": getattr(args, "reasoning_effort", None),
             "session_id": getattr(args, "session_id", None),
             "resume_recent": not bool(getattr(args, "session_id", None)),
             "tools": "",
+            "disallowed_tools": None,
+            "disable_web_search": False,
             "check": False,
             "finalize_only": True,
         }
@@ -545,10 +699,13 @@ def research_profile(args, *, attempt: int, finalize_only: bool = False) -> dict
         "timeout": args.timeout,
         "model": args.model,
         "effort": args.effort,
+        "best_of_n": getattr(args, "best_of_n", None),
         "reasoning_effort": getattr(args, "reasoning_effort", None),
         "session_id": getattr(args, "session_id", None),
         "resume_recent": False,
-        "tools": None,
+        "tools": getattr(args, "tools", None),
+        "disallowed_tools": getattr(args, "disallowed_tools", None),
+        "disable_web_search": getattr(args, "disable_web_search", False),
         "check": getattr(args, "check", False),
         "finalize_only": False,
     }
@@ -614,6 +771,16 @@ def cmd_research(args):
     if args.retries < 0:
         print("Error: --retries must be >= 0", file=sys.stderr)
         sys.exit(2)
+    if getattr(args, "best_of_n", None) is not None and args.best_of_n < 2:
+        print("Error: --best-of-n must be >= 2", file=sys.stderr)
+        sys.exit(2)
+    if getattr(args, "no_retry", False):
+        args.retries = 0
+    if getattr(args, "finalize_only", False):
+        args.retries = 0
+        if getattr(args, "best_of_n", None) is not None:
+            print("Error: --finalize-only cannot be combined with --best-of-n", file=sys.stderr)
+            sys.exit(2)
 
     res = {}
     text = ""
@@ -621,8 +788,9 @@ def cmd_research(args):
     attempts = args.retries + 1
     previous_max_turns_reached = False
     for attempt in range(1, attempts + 1):
-        finalize_only = attempt > 1 and previous_max_turns_reached
-        profile = research_profile(args, attempt=attempt, finalize_only=finalize_only)
+        manual_finalize = bool(getattr(args, "finalize_only", False) and attempt == 1)
+        finalize_only = manual_finalize or (attempt > 1 and previous_max_turns_reached)
+        profile = research_profile(args, attempt=attempt, finalize_only=finalize_only, manual_finalize=manual_finalize)
         prompt = build_research_prompt(
             query,
             effort=profile["effort"],
@@ -635,10 +803,13 @@ def cmd_research(args):
             timeout=profile["timeout"],
             model=profile["model"],
             effort=profile["effort"],
+            best_of_n=profile["best_of_n"],
             reasoning_effort=profile["reasoning_effort"],
             session_id=profile["session_id"],
             resume_recent=profile["resume_recent"],
             tools=profile["tools"],
+            disallowed_tools=profile["disallowed_tools"],
+            disable_web_search=profile["disable_web_search"],
             check=profile["check"],
         )
         raw_text = extract_text(res)
@@ -701,13 +872,19 @@ def cmd_research(args):
         "timeout": args.timeout,
         "attempts": attempt,
         "retries": args.retries,
+        "no_retry": getattr(args, "no_retry", False),
         "fetcher": "grok:research",
         "grok_returncode": grok_returncode,
         "model": getattr(args, "model", None),
         "effort": getattr(args, "effort", None),
+        "best_of_n": getattr(args, "best_of_n", None),
         "reasoning_effort": getattr(args, "reasoning_effort", None),
         "session_id": getattr(args, "session_id", None),
+        "tools": getattr(args, "tools", None),
+        "disallowed_tools": getattr(args, "disallowed_tools", None),
+        "disable_web_search": getattr(args, "disable_web_search", False),
         "check": getattr(args, "check", False),
+        "finalize_only": getattr(args, "finalize_only", False),
         "attempt_details": [
             {k: v for k, v in detail.items() if k not in ("stdout", "stderr")}
             for detail in attempt_details
@@ -738,6 +915,15 @@ def main():
         description="Call Grok Build native X tools and X-first Grok research from CLI / Codex / other agents."
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    # doctor
+    p_doctor = sub.add_parser("doctor", help="Diagnose local Grok CLI, model, native X tool, and fallback availability")
+    p_doctor.add_argument("--format", choices=["text", "json"], default="text")
+    p_doctor.add_argument("--model", default=SUPERX_MODEL, help="Model to probe for native X tools (default SUPERX_MODEL or grok-build)")
+    p_doctor.add_argument("--probe-x-tools", action="store_true", help="Run a live Grok probe to confirm x_user_search/x_keyword_search/x_semantic_search/x_thread_fetch availability")
+    p_doctor.add_argument("--timeout", type=int, default=120, help="Timeout in seconds for the optional live X tool probe")
+    p_doctor.add_argument("--no-update-check", action="store_true", help="Skip `grok update --check --json`")
+    p_doctor.set_defaults(func=cmd_doctor)
 
     # user
     p_user = sub.add_parser("user", help="x_user_search by name/handle")
@@ -789,11 +975,17 @@ def main():
     p_research.add_argument("--path-only", action="store_true", help="print only the saved Markdown path")
     p_research.add_argument("--timeout", type=int, default=int(os.environ.get("SUPERX_RESEARCH_TIMEOUT", "3600")), help="Grok subprocess timeout in seconds for the primary heavy run (default 3600 or SUPERX_RESEARCH_TIMEOUT)")
     p_research.add_argument("--retries", type=int, default=int(os.environ.get("SUPERX_RESEARCH_RETRIES", "1")), help="Continuation/finalization attempts when Grok returns no usable Markdown (default 1 or SUPERX_RESEARCH_RETRIES)")
+    p_research.add_argument("--no-retry", dest="no_retry", action="store_true", help="Disable the automatic empty-output/max-turns resume-finalizer retry")
     p_research.add_argument("--allow-partial", action="store_true", help="exit 0 even if grok exits non-zero after producing output")
     p_research.add_argument("--model", default="grok-build", help="Model to use (default grok-build for heavy research; see `grok models`)")
     p_research.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default="max", help="Effort level (default max for heavy/expert-like research)")
+    p_research.add_argument("--best-of-n", dest="best_of_n", type=int, help="Run the primary Grok call as a best-of-N subagent tournament. Larger requested N values depend on Grok CLI runtime caps. Retry finalizers do not use it.")
     p_research.add_argument("--reasoning-effort", dest="reasoning_effort", help="Reasoning effort (only for models that support it; grok-build does not)")
     p_research.add_argument("--session-id", dest="session_id", help="Existing Grok session ID (from `grok sessions list`) to resume for follow-up. Uses --resume; cannot create arbitrary names.")
+    p_research.add_argument("--tools", help="Advanced: pass Grok CLI --tools to the primary research run")
+    p_research.add_argument("--disallowed-tools", dest="disallowed_tools", help="Advanced: pass Grok CLI --disallowed-tools to the primary research run")
+    p_research.add_argument("--disable-web-search", action="store_true", help="Advanced: pass Grok CLI --disable-web-search to the primary research run")
+    p_research.add_argument("--finalize-only", action="store_true", help="Resume the existing/recent Grok session and only produce the final Markdown report; no tools, no discovery, no retry")
     p_research.add_argument("--no-check", dest="check", action="store_false", default=True, help="Disable self-verification loop (enabled by default for heavy research)")
     p_research.set_defaults(func=cmd_research)
 

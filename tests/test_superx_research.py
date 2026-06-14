@@ -176,6 +176,26 @@ class SuperxResearchTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 2)
             self.assertIn("--retries must be >= 0", proc.stderr)
 
+    def test_research_rejects_invalid_best_of_n(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake = self.make_fake_grok(tmp_path, "# Should Not Run\n")
+
+            proc = self.run_superx(["research", "best", "--best-of-n", "1"], fake)
+
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("--best-of-n must be >= 2", proc.stderr)
+
+    def test_research_rejects_finalize_only_with_best_of_n(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake = self.make_fake_grok(tmp_path, "# Should Not Run\n")
+
+            proc = self.run_superx(["research", "final", "--finalize-only", "--best-of-n", "4"], fake)
+
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("--finalize-only cannot be combined", proc.stderr)
+
     def test_research_rejects_empty_grok_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -185,6 +205,23 @@ class SuperxResearchTests(unittest.TestCase):
 
             self.assertEqual(proc.returncode, 1)
             self.assertIn("returned empty output", proc.stderr)
+
+    def test_research_no_retry_disables_auto_finalizer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake = self.make_fake_grok_script(
+                tmp_path,
+                "#!/bin/sh\nprintf 'Max turns reached\\n' >&2\nexit 0\n",
+            )
+
+            proc = self.run_superx(["research", "wide", "--no-retry", "--cache-dir", str(tmp_path / "cache")], fake)
+
+            self.assertEqual(proc.returncode, 1)
+            metadata_files = list((tmp_path / "cache" / "research" / "_failed").glob("*.json"))
+            self.assertEqual(len(metadata_files), 1)
+            metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(metadata["attempts"], 1)
+            self.assertEqual(metadata["attempt_details"][0]["profile"], "primary")
 
     def test_research_timeout_preserves_partial_output(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -259,6 +296,10 @@ count=$((count + 1))
 printf "%s" "$count" > "{counter}"
 printf "attempt=$count args=%s\\n" "$*" >> "{args_log}"
 if [ "$count" -eq 1 ]; then
+  case " $* " in
+    *" --best-of-n 4 "*) ;;
+    *) printf "primary should use best-of-n\\n" >&2; exit 1 ;;
+  esac
   printf "Max turns reached\\n" >&2
   exit 0
 fi
@@ -277,6 +318,9 @@ esac
 case " $* " in
   *" --check "*) printf "finalizer should disable check\\n" >&2; exit 1 ;;
 esac
+case " $* " in
+  *" --best-of-n "*) printf "finalizer should disable best-of-n\\n" >&2; exit 1 ;;
+esac
 cat <<'EOF'
 # Finalized OK
 
@@ -289,22 +333,95 @@ EOF
             output = tmp_path / "finalizer.md"
 
             proc = self.run_superx(
-                ["research", "wide topic", "--format", "json", "--output", str(output)],
+                [
+                    "research",
+                    "wide topic",
+                    "--best-of-n",
+                    "4",
+                    "--tools",
+                    "web_search,x_keyword_search",
+                    "--disallowed-tools",
+                    "run_terminal_command",
+                    "--disable-web-search",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ],
                 fake,
             )
 
             self.assertEqual(proc.returncode, 0, proc.stderr)
             metadata = json.loads(proc.stdout)
             self.assertEqual(metadata["attempts"], 2)
+            self.assertEqual(metadata["best_of_n"], 4)
             self.assertEqual(metadata["attempt_details"][0]["profile"], "primary")
+            self.assertEqual(metadata["attempt_details"][0]["best_of_n"], 4)
+            self.assertEqual(metadata["attempt_details"][0]["tools"], "web_search,x_keyword_search")
+            self.assertEqual(metadata["attempt_details"][0]["disallowed_tools"], "run_terminal_command")
+            self.assertTrue(metadata["attempt_details"][0]["disable_web_search"])
             self.assertTrue(metadata["attempt_details"][0]["max_turns_reached"])
             self.assertEqual(metadata["attempt_details"][1]["profile"], "resume-finalizer")
+            self.assertIsNone(metadata["attempt_details"][1]["best_of_n"])
             self.assertTrue(metadata["attempt_details"][1]["resume_recent"])
             self.assertEqual(metadata["attempt_details"][1]["effort"], "max")
             self.assertEqual(metadata["attempt_details"][1]["max_turns"], 6)
             self.assertEqual(metadata["attempt_details"][1]["tools"], "")
+            self.assertIsNone(metadata["attempt_details"][1]["disallowed_tools"])
+            self.assertFalse(metadata["attempt_details"][1]["disable_web_search"])
             self.assertFalse(metadata["attempt_details"][1]["check"])
             self.assertEqual(output.read_text(encoding="utf-8"), "# Finalized OK\n\n- saved")
+
+    def test_research_manual_finalize_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args_log = tmp_path / "args.log"
+            fake = self.make_fake_grok_script(
+                tmp_path,
+                f"""#!/bin/sh
+printf "%s\\n" "$*" > "{args_log}"
+case " $* " in
+  *" -r 019e-session "*) ;;
+  *) printf "missing explicit resume\\n" >&2; exit 1 ;;
+esac
+case " $* " in
+  *" --tools  "*) ;;
+  *) printf "finalizer should disable tools\\n" >&2; exit 1 ;;
+esac
+cat <<'EOF'
+# Manual Final
+
+- ok
+EOF
+""",
+            )
+            output = tmp_path / "manual.md"
+
+            proc = self.run_superx(
+                [
+                    "research",
+                    "manual final",
+                    "--finalize-only",
+                    "--session-id",
+                    "019e-session",
+                    "--max-turns",
+                    "9",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                ],
+                fake,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            metadata = json.loads(proc.stdout)
+            self.assertTrue(metadata["finalize_only"])
+            self.assertEqual(metadata["attempts"], 1)
+            self.assertEqual(metadata["attempt_details"][0]["profile"], "manual-finalizer")
+            self.assertEqual(metadata["attempt_details"][0]["max_turns"], 9)
+            self.assertFalse(metadata["attempt_details"][0]["resume_recent"])
+            self.assertEqual(output.read_text(encoding="utf-8"), "# Manual Final\n\n- ok")
 
     def test_research_empty_failure_writes_failed_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -366,6 +483,8 @@ EOF
                     "high",
                     "--reasoning-effort",
                     "high",
+                    "--best-of-n",
+                    "16",
                     "--session-id",
                     "019e-session",
                 ],
@@ -376,6 +495,7 @@ EOF
             metadata = json.loads(proc.stdout)
             self.assertEqual(metadata["model"], "fake-model")
             self.assertEqual(metadata["effort"], "high")
+            self.assertEqual(metadata["best_of_n"], 16)
             self.assertEqual(metadata["reasoning_effort"], "high")
             self.assertEqual(metadata["session_id"], "019e-session")
             self.assertTrue(metadata["check"])
@@ -427,8 +547,12 @@ EOF
                 timeout=123,
                 model="grok-build",
                 effort="max",
+                best_of_n=16,
                 reasoning_effort="high",
                 session_id="019e-session",
+                tools="web_search,x_keyword_search",
+                disallowed_tools="run_terminal_command",
+                disable_web_search=True,
                 check=True,
             )
 
@@ -437,10 +561,17 @@ EOF
         self.assertIn("grok-build", cmd)
         self.assertIn("--effort", cmd)
         self.assertIn("max", cmd)
+        self.assertIn("--best-of-n", cmd)
+        self.assertIn("16", cmd)
         self.assertIn("--reasoning-effort", cmd)
         self.assertIn("high", cmd)
         self.assertIn("-r", cmd)
         self.assertIn("019e-session", cmd)
+        self.assertIn("--tools", cmd)
+        self.assertIn("web_search,x_keyword_search", cmd)
+        self.assertIn("--disallowed-tools", cmd)
+        self.assertIn("run_terminal_command", cmd)
+        self.assertIn("--disable-web-search", cmd)
         self.assertNotIn("-s", cmd)
         self.assertIn("--check", cmd)
         self.assertEqual(result["text"], "# OK\n")
@@ -492,6 +623,33 @@ EOF
         self.assertIn("--tools", cmd)
         self.assertEqual(cmd[cmd.index("--tools") + 1], "")
         self.assertEqual(result["text"], "# OK\n")
+
+    def test_doctor_json_parses_models_and_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake = self.make_fake_grok_script(
+                tmp_path,
+                """#!/bin/sh
+case "$*" in
+  "version") printf 'grok 0.2.51 (fake) [stable]\\n'; exit 0 ;;
+  "update --check --json") printf '{"currentVersion":"0.2.51","latestVersion":"0.2.51","updateAvailable":false}\\n'; exit 0 ;;
+  "models") printf 'Default model: grok-composer-2.5-fast\\n\\nAvailable models:\\n  - grok-build\\n  * grok-composer-2.5-fast (default)\\n'; exit 0 ;;
+  *"--output-format json"*) printf '{"text":"[\\\\\\"x_user_search\\\\\\",\\\\\\"x_semantic_search\\\\\\",\\\\\\"x_keyword_search\\\\\\",\\\\\\"x_thread_fetch\\\\\\"]"}\\n'; exit 0 ;;
+esac
+printf 'unexpected args: %s\\n' "$*" >&2
+exit 1
+""",
+            )
+
+            proc = self.run_superx(["doctor", "--format", "json", "--probe-x-tools"], fake)
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            report = json.loads(proc.stdout)
+            self.assertEqual(report["status"], "ok")
+            self.assertEqual(report["parsed_models"]["default"], "grok-composer-2.5-fast")
+            self.assertIn("grok-build", report["parsed_models"]["models"])
+            self.assertFalse(report["grok_update"]["json"]["updateAvailable"])
+            self.assertTrue(report["x_tool_probe"]["x_tools_available"])
 
     def test_max_turns_reached_accepts_common_variants(self):
         import superx
