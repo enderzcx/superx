@@ -18,7 +18,7 @@
 | `superx keyword` | 使用 X 高级搜索语法查帖 | Grok Build 原生 `x_keyword_search` |
 | `superx semantic` | 用自然语言语义搜索相关帖子 | Grok Build 原生 `x_semantic_search` |
 | `superx thread` | 获取完整线程、父帖、回复、指标等 | Grok Build 原生 `x_thread_fetch` |
-| `superx article` | 获取 X status/article 正文并保存为 Markdown | Grok 优先，可用 OpenCLI 作为文章 fallback |
+| `superx article` | 获取 X status/article 正文并保存为 Markdown | auto 短试 Grok，再用 OpenCLI 作为文章 fallback |
 | `superx research` | 让 Grok 做一次性调研并保存 Markdown 报告 | Grok Build CLI，X 工具受账号权限限制 |
 | `superx doctor` | 诊断本机 Grok/OpenCLI/model/X 工具可用性 | 本地 CLI 探测，可选 live X 工具 probe |
 
@@ -27,6 +27,8 @@
 - Grok-native：`user`、`keyword`、`semantic`、`thread` 直接调用 Grok Build 原生 X 工具，返回 JSON。
 - Markdown cache：`article` 会把内容保存到当前项目的 `.superx/articles/`，后续 Agent 可以直接读文件，不用重复抓取同一个 URL。
 - Research cache：`research` 会让 Grok 做一次性调研，把报告保存到 `.superx/research/`，旁边写入一份 metadata JSON。
+
+Agent 集成时要 shell 调用 `superx ...`，不要把 `x_user_search` / `x_thread_fetch` 当成 Codex 内置工具，也不要用裸 `grok -p` 替代 wrapper。`superx` 会强制使用有 X 工具的 `grok-build`。
 
 ## 能力边界
 
@@ -49,7 +51,7 @@ Grok-native 的四个命令：
 superx article <url> --source-mode opencli
 ```
 
-它用于抓取公开或本地登录可见的 X article/status 正文，并继续写入 Markdown 缓存。`user`、`keyword`、`semantic`、`thread` 目前没有内置 OpenCLI fallback。
+它用于抓取公开或本地登录可见的 X article/status 正文，并继续写入 Markdown 缓存。`article` 的默认 `auto` 模式会先短试 Grok，再 fallback 到 OpenCLI；`user`、`keyword`、`semantic`、`thread` 目前没有内置 OpenCLI fallback。
 
 `superx research` 是一次性 Grok 调研入口，用来替代“Codex 写 prompt -> 你复制到网页版 Grok -> 再复制结果回来”的中转流程。它会调用本地 Grok CLI，由 Grok 自己决定使用 web、open_page、原生 X 工具等能力，最后输出 Markdown 报告。
 
@@ -141,6 +143,12 @@ superx thread 'https://x.com/xai/status/2061510464325206163'
 
 ```bash
 superx article 'https://x.com/0xenderzcx/status/2061778310934516097?s=20'
+```
+
+默认 `auto` 模式会先给 Grok `x_thread_fetch` 一个较短预算（默认 45s，可用 `--grok-timeout` 或 `SUPERX_ARTICLE_GROK_TIMEOUT` 调整），拿不到正文时自动 fallback 到 OpenCLI。已知长文想快取正文时可以直接指定：
+
+```bash
+superx article 'https://x.com/0xenderzcx/status/2061778310934516097?s=20' --source-mode opencli --path-only
 ```
 
 只返回保存后的 Markdown 路径：
@@ -329,7 +337,7 @@ superx article 'https://x.com/0xenderzcx/status/2061778310934516097?s=20' --path
 superx research '调研最近 X 上关于 Grok Build 的高信号讨论' --path-only
 ```
 
-诊断和搜索命令返回 JSON，Agent 可以直接解析。`article --path-only` 和 `research --path-only` 返回 Markdown 文件路径，Agent 可以继续读取本地文件。
+诊断和搜索命令返回 JSON，Agent 可以直接解析。`article --path-only` 和 `research --path-only` 返回 Markdown 文件路径，Agent 可以继续读取本地文件。X 原生命令经常需要 25-120s；在 Codex 里不要把第一个 30s 无最终输出当成失败，要保持 exec session 继续轮询。
 
 在本机 Codex 环境中，配套 skill 名也叫 `superx`。公开仓库用户不需要这个本地 skill，也可以直接用 CLI。
 
@@ -340,7 +348,7 @@ superx user <query> [--count N]
 superx semantic <query> [--limit N] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD] [--min-score FLOAT]
 superx keyword <query> [--limit N] [--mode Latest|Top] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]
 superx thread <post-id-or-status-url>
-superx article <post-id-or-status-url> [--format md|json] [--path-only] [--force] [--output PATH] [--cache-dir DIR] [--source-mode auto|grok|opencli]
+superx article <post-id-or-status-url> [--format md|json] [--path-only] [--force] [--output PATH] [--cache-dir DIR] [--source-mode auto|grok|opencli] [--grok-timeout SEC]
 superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--no-retry] [--allow-partial] [--output PATH] [--cache-dir DIR] [--model MODEL] [--effort low|medium|high|xhigh|max] [--best-of-n N] [--reasoning-effort EFFORT] [--session-id SESSION_ID] [--tools TOOLS] [--disallowed-tools TOOLS] [--disable-web-search] [--finalize-only] [--no-check]
 superx doctor [--format text|json] [--model MODEL] [--probe-x-tools] [--timeout SEC] [--no-update-check]
 ```
@@ -359,6 +367,13 @@ superx doctor [--format text|json] [--model MODEL] [--probe-x-tools] [--timeout 
 
 ```bash
 superx article <url> --source-mode opencli
+```
+
+`article --source-mode auto` 默认只给 Grok-first 尝试 45 秒，然后 fallback 到 OpenCLI。可以调整：
+
+```bash
+superx article <url> --grok-timeout 20
+export SUPERX_ARTICLE_GROK_TIMEOUT=20
 ```
 
 如果是 `research` 超时，可以提高超时，或在确实只要轻量结果时降低 turns：

@@ -186,6 +186,60 @@ class SuperxResearchTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 2)
             self.assertIn("--best-of-n must be >= 2", proc.stderr)
 
+    def test_article_auto_falls_back_to_opencli_after_short_grok_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_grok = tmp_path / "fake-grok-timeout"
+            fake_grok.write_text("#!/bin/sh\nsleep 2\n", encoding="utf-8")
+            fake_grok.chmod(fake_grok.stat().st_mode | stat.S_IXUSR)
+            fake_opencli = tmp_path / "fake-opencli"
+            fake_opencli.write_text(
+                """#!/bin/sh
+cat <<'EOF'
+[{"title":"Fallback Title","author":"xAI","url":"https://x.com/xai/status/2061778378089533835","content":"Fallback body"}]
+EOF
+""",
+                encoding="utf-8",
+            )
+            fake_opencli.chmod(fake_opencli.stat().st_mode | stat.S_IXUSR)
+            output = tmp_path / "article.md"
+            env = os.environ.copy()
+            env["GROK_BIN"] = str(fake_grok)
+            env["OPENCLI_BIN"] = str(fake_opencli)
+
+            proc = self.run_superx_with_env(
+                [
+                    "article",
+                    "https://x.com/xai/status/2061778378089533835",
+                    "--grok-timeout",
+                    "1",
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output),
+                    "--cache-dir",
+                    str(tmp_path / "cache"),
+                ],
+                env,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("Error: grok timed out", proc.stderr)
+            metadata = json.loads(proc.stdout)
+            self.assertFalse(metadata["cache_hit"])
+            self.assertEqual(metadata["article"]["fetched_via"], "opencli:twitter article")
+            self.assertEqual(output.read_text(encoding="utf-8").splitlines()[0], "# Fallback Title")
+
+    def test_article_rejects_invalid_grok_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake = self.make_fake_grok(tmp_path, "# Should Not Run\n")
+
+            proc = self.run_superx(["article", "2061778378089533835", "--grok-timeout", "0"], fake)
+
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("--grok-timeout must be > 0", proc.stderr)
+
     def test_research_rejects_finalize_only_with_best_of_n(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

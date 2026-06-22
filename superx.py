@@ -46,6 +46,21 @@ OPENCLI_BIN = resolve_bin("OPENCLI_BIN", "opencli")
 SUPERX_MODEL = os.environ.get("SUPERX_MODEL", "grok-build")
 
 
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+DEFAULT_HEADLESS_TIMEOUT = env_int("SUPERX_HEADLESS_TIMEOUT", 120)
+DEFAULT_ARTICLE_AUTO_GROK_TIMEOUT = env_int("SUPERX_ARTICLE_GROK_TIMEOUT", 45)
+
+
 def strip_ansi(value: str) -> str:
     return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value or "")
 
@@ -66,12 +81,13 @@ def coerce_text(value) -> str:
 def run_grok_headless(
     prompt: str,
     max_turns: int = 4,
-    timeout: int = 120,
+    timeout: int = None,
     print_errors: bool = True,
     include_internal: bool = False,
     model: str = None,
 ) -> dict:
     """Run grok -p with yolo, capture the json output."""
+    timeout = timeout or DEFAULT_HEADLESS_TIMEOUT
     cmd = [
         GROK_BIN,
         "-p", prompt,
@@ -93,7 +109,8 @@ def run_grok_headless(
         print(f"Error: grok binary not found: {GROK_BIN}", file=sys.stderr)
         sys.exit(127)
     except subprocess.TimeoutExpired:
-        print(f"Error: grok timed out after {timeout}s", file=sys.stderr)
+        if print_errors:
+            print(f"Error: grok timed out after {timeout}s", file=sys.stderr)
         sys.exit(1)
 
     if proc.returncode != 0:
@@ -328,10 +345,10 @@ After the tool result is returned in your context, your VERY NEXT (and final) ou
 - If multiple items, emit a JSON array or object exactly as the tool gave it.
 Output nothing else.""" 
 
-def fetch_thread_data(post_id: str) -> dict:
+def fetch_thread_data(post_id: str, timeout: int = None, print_errors: bool = True) -> dict:
     params = {"post_id": str(post_id)}
     prompt = force_tool_prompt("x_thread_fetch", params)
-    res = run_grok_headless(prompt)
+    res = run_grok_headless(prompt, timeout=timeout, print_errors=print_errors)
     text = extract_text(res)
     return parse_json_text(text)
 
@@ -532,6 +549,9 @@ def cmd_thread(args):
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 def cmd_article(args):
+    if args.grok_timeout is not None and args.grok_timeout <= 0:
+        print("Error: --grok-timeout must be > 0", file=sys.stderr)
+        sys.exit(2)
     post_id = normalize_post_id(args.source)
     cached = find_cached_article(post_id, args.cache_dir)
     if cached and not args.force:
@@ -546,10 +566,17 @@ def cmd_article(args):
     article = None
     errors = []
     if args.source_mode in ("auto", "grok"):
+        grok_timeout = args.grok_timeout
+        if grok_timeout is None:
+            grok_timeout = DEFAULT_ARTICLE_AUTO_GROK_TIMEOUT if args.source_mode == "auto" else DEFAULT_HEADLESS_TIMEOUT
         try:
-            article = compact_article_from_grok(fetch_thread_data(post_id), args.source, post_id)
+            article = compact_article_from_grok(
+                fetch_thread_data(post_id, timeout=grok_timeout, print_errors=args.source_mode == "grok"),
+                args.source,
+                post_id,
+            )
         except SystemExit as exc:
-            errors.append(f"grok exited {exc.code}")
+            errors.append(f"grok exited {exc.code} after {grok_timeout}s")
         except Exception as exc:
             errors.append(f"grok: {exc}")
         if args.source_mode == "grok" and article is None:
@@ -963,6 +990,14 @@ def main():
     p_article.add_argument("--path-only", action="store_true", help="print only the cached/saved Markdown path")
     p_article.add_argument("--force", action="store_true", help="ignore cache and fetch again")
     p_article.add_argument("--source-mode", choices=["auto", "grok", "opencli"], default="auto", help="fetcher order")
+    p_article.add_argument(
+        "--grok-timeout",
+        type=int,
+        help=(
+            "Seconds for the Grok x_thread_fetch attempt. "
+            f"auto defaults to {DEFAULT_ARTICLE_AUTO_GROK_TIMEOUT}s before OpenCLI fallback; grok defaults to {DEFAULT_HEADLESS_TIMEOUT}s."
+        ),
+    )
     p_article.set_defaults(func=cmd_article)
 
     # research - X-first one-shot research via Grok (web + native X tools etc.)

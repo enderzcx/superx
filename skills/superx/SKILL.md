@@ -1,15 +1,49 @@
 ---
 name: superx
-description: "superx：包装本地 `superx` CLI 和 Grok Build 原生 X/Twitter 工具（x_user_search / x_keyword_search / x_semantic_search / x_thread_fetch）。Use when the task needs X/Twitter user search, keyword/semantic search, thread/article fetch, `.superx/articles` Markdown cache, or one-shot X-first/frontier research via `superx research`. Not for writing X posts, generic web research where official primary sources are required, browser screenshots, or continuous Grok collaboration."
-when_to_use: "superx / 用 superx 搜 X / superx research / superx 调研 / superx X 工具 / x_user_search / x_keyword_search / x_semantic_search / x_thread_fetch / Grok Build X tools / X article Markdown 缓存 / 让 Codex 直接用 Grok 做研究 / 比网页 Grok copy-paste 更高效"
+description: "Default X/Twitter route for Ender's local agents. Use when the task gives any X/Twitter status URL, thread URL, article URL, tweet ID, account lookup, keyword/semantic search, thread/article fetch, `.superx/articles` Markdown cache, or one-shot X-first/frontier research via `superx research`. Not for writing X posts, generic web research where official primary sources are required, browser screenshots, or continuous Grok collaboration. Use `fetch-x` only as explicit fallback after superx is unavailable, blocked, or unsuitable."
+when_to_use: "superx / X URL / Twitter URL / x.com status URL / X article / X thread / tweet ID / 用 superx 搜 X / superx research / superx 调研 / superx X 工具 / x_user_search / x_keyword_search / x_semantic_search / x_thread_fetch / Grok Build X tools / X article Markdown 缓存 / 让 Codex 直接用 Grok 做研究 / 比网页 Grok copy-paste 更高效"
 sunny_skill_type: wrapper
 ---
 
 # superx
 
+## Agent-readable SOP Registry
+
+Use the shared Sunny skill registry to inspect this installed version before relying on stale README, memory, or copied instructions:
+
+```bash
+python3 "$HOME/.agents/skills/sunny-meta-skill/scripts/skill_registry.py" list "$HOME/.agents/skills/superx" --format markdown
+python3 "$HOME/.agents/skills/sunny-meta-skill/scripts/skill_registry.py" read "$HOME/.agents/skills/superx" SKILL.md
+python3 "$HOME/.agents/skills/sunny-meta-skill/scripts/skill_registry.py" validate "$HOME/.agents/skills/superx" --format markdown
+```
+
+Only `SKILL.md`, `references/`, `templates/`, and `evals/` are agent-readable SOP. The registry refuses `scripts/`, assets, secrets, logs, absolute paths, and dot-segment escapes.
+
 **Grok Build 原生 X 工具的 Codex / 本地 agent 包装层**。
 
 Grok（xAI）内置 4 个高权限 X 工具，可直接返回结构化结果；相比浏览器抓取，更少遇到登录态、extension、页面反爬这类本地问题。
+
+## Routing Priority
+
+For Ender's local agent environment, `superx` is the default first route for X/Twitter work:
+
+- any `x.com` / `twitter.com` status URL, thread URL, article URL, or numeric tweet ID;
+- X account lookup, keyword search, semantic search, and structured thread fetch;
+- X long-form article capture when a Markdown cache under `.superx/articles/` is useful;
+- X-first/frontier research where X is a primary signal source.
+
+Do not start with `fetch-x` just because the user provided a known X URL. Use `fetch-x` only after `superx` is unavailable, blocked, explicitly unsuitable, or the user specifically asks for proxy/opencli diagnostics.
+
+## Codex Execution Contract
+
+Codex and local agents must call the shell CLI, not imagined in-process tools:
+
+- Do not directly call `x_user_search`, `x_keyword_search`, `x_semantic_search`, or `x_thread_fetch` from Codex. Those are Grok Build native tools, not Codex tools.
+- Do not bypass the wrapper with bare `grok -p` for normal tasks. Bare Grok may default to `grok-composer-2.5-fast`, which lacks native X tools; `superx` forces `grok-build`.
+- Run `superx user|semantic|keyword|thread|article|research ...` from shell and read stdout or the cached Markdown path.
+- Use the longest available exec yield and keep polling long-running commands. Do not treat the first 30s with no final output as failure, and do not send SIGINT while the subprocess is still inside its documented timeout.
+- For known X long-form article/status body capture, prefer `superx article '<url>' --source-mode opencli --path-only` when speed matters or the Grok-first path is already known to hang.
+- If a command appears stuck, diagnose with `superx doctor --format json --no-update-check` before switching routes.
 
 ## 你当前拥有的 X 相关工具（Grok 侧）
 
@@ -34,7 +68,7 @@ Grok（xAI）内置 4 个高权限 X 工具，可直接返回结构化结果；�
 - 通用 `web_search` / `open_page` / chrome-devtools MCP：可辅助，但 X 经常 402/挡匿名或需登录。
 - 浏览器手动或 Playwright：兜底。
 
-**推荐**：需要**搜索/发现/结构化数据**时优先 `superx`（本 skill）。需要**抓已知 URL 的正文+replies** 且 superx 不方便时再退 `fetch-x`。
+**推荐**：X/Twitter 相关默认先用 `superx`（本 skill），包括已知 status URL / article URL / tweet ID。需要 proxy 快路径、opencli 诊断、Chrome extension 诊断，或 `superx` 不可用/失败/不适合时，再退 `fetch-x`。
 
 ## 安装 / 启用（给 Codex / 你自己）
 
@@ -156,20 +190,22 @@ superx research "topic" --finalize-only --session-id 019e...  # 只整理已有 
 
 它把本地 grok 变成了 Codex 的一次性研究后端；持续协作另做 `grb`，不要把 superx 泛化成持续协作桥。
 
-### 直接用 grok CLI（无需 wrapper，适合一次性的）
+### 直接用 grok CLI（仅人工调试）
+
+Codex 默认不要使用这一节；正常任务必须使用 `superx` wrapper。下面只用于人工验证 Grok Build 工具面，并且必须显式指定 `-m grok-build`。
 
 ```bash
 # 用户搜索
-grok -p 'You MUST call x_user_search with query="xAI" count=3. After result, output ONLY the tool JSON result, nothing else.' --yolo --output-format json | jq -r '.text'
+grok -m grok-build -p 'You MUST call x_user_search with query="xAI" count=3. After result, output ONLY the tool JSON result, nothing else.' --yolo --output-format json | jq -r '.text'
 
 # 语义
-grok -p 'MUST use x_semantic_search. query="xAI Grok release notes" limit=5 from_date="2026-04-01". Output ONLY tool result JSON.' --yolo --output-format json | jq -r '.text'
+grok -m grok-build -p 'MUST use x_semantic_search. query="xAI Grok release notes" limit=5 from_date="2026-04-01". Output ONLY tool result JSON.' --yolo --output-format json | jq -r '.text'
 
 # 关键词（高级语法全支持）
-grok -p 'Call x_keyword_search. query="from:xai min_faves:100 since:2026-05-01", mode="Latest", limit=10. ONLY the tool JSON.' --yolo --output-format json | jq -r '.text'
+grok -m grok-build -p 'Call x_keyword_search. query="from:xai min_faves:100 since:2026-05-01", mode="Latest", limit=10. ONLY the tool JSON.' --yolo --output-format json | jq -r '.text'
 
 # 线程
-grok -p 'Use x_thread_fetch with post_id="1661523610111193088". Output ONLY the full thread JSON from the tool.' --yolo --output-format json | jq -r '.text'
+grok -m grok-build -p 'Use x_thread_fetch with post_id="1661523610111193088". Output ONLY the full thread JSON from the tool.' --yolo --output-format json | jq -r '.text'
 ```
 
 ## 参数速查（对应原生工具 schema）
@@ -219,7 +255,9 @@ grok -p 'Use x_thread_fetch with post_id="1661523610111193088". Output ONLY the 
 - `grok: command not found` → `export PATH="$HOME/.local/bin:$PATH"` 或用全路径。
 - **X 子命令超时 / max turns / 找不到 `x_user_search`** → 先跑 `superx doctor --format json --no-update-check`，必要时跑 `superx doctor --probe-x-tools` 做 live probe。Grok Build 更新后默认模型常变成 `grok-composer-2.5-fast`，它**没有**原生 X 工具；只有 `grok-build` 才有 `x_user_search` / `x_keyword_search` / `x_semantic_search` / `x_thread_fetch`。wrapper 的 `user` / `semantic` / `keyword` / `thread` / `article` 已强制 `-m grok-build`；可用 `SUPERX_MODEL=grok-build` 覆盖。
 - **Grok Build IDE / Composer agent 里没有 `x_*` 工具** → 正常。IDE 侧默认是 composer 工具面（Shell/Grep/WebSearch…），不能直接调 X 工具；请 shell 跑 `superx user/semantic/keyword/thread/article/research`，不要指望 agent 内置 `x_user_search`。
+- **Codex 30 秒看起来没响应** → 这通常不是 CLI 挂了。`user` / `keyword` / `thread` 可能需要 25-120s；保持 exec session 继续轮询，不要 30s 就中断。
 - 工具没返回 / 乱输出 → wrapper 里的 prompt 已经很严格；可加 `--max-turns 5` 重试，或直接在 grok TUI 里用 `grok-build` 验证 `x_user_search` 等。
+- `superx article` 默认 `auto` 会给 Grok-first 尝试一个较短预算（默认 45s，可用 `SUPERX_ARTICLE_GROK_TIMEOUT` 或 `--grok-timeout` 调整），然后 fallback 到 OpenCLI。已知长文想快取正文时，直接用 `superx article '<url>' --source-mode opencli --path-only`。
 - 认证问题 → `grok login` 或 `export XAI_API_KEY=...`
 - 某些高级语法不生效 → 确认 query 字符串正确（Grok 会原样传给工具）。
 - jq 没装 → wrapper 仍会打印 text，Codex 自己 parse 即可。
@@ -229,6 +267,7 @@ grok -p 'Use x_thread_fetch with post_id="1661523610111193088". Output ONLY the 
 - 本 skill 位置：`~/.agents/skills/superx/`
 - canonical 源码：仓库根目录 `superx.py`
 - 本 skill 的 `scripts/superx.py` 是薄 launcher，不再复制 wrapper 主体，避免仓库版和 skill 版漂移。
+- 安装版 launcher 优先读 `SUPERX_SOURCE`，默认指向 `/Users/sunny/Work/CODEX/grok/superx.py`；移动源码目录后更新环境变量或 symlink。
 - X 专用子命令保持结构化 JSON；`research` 子命令默认重度专家模式（effort=max + check + model=grok-build + max-turns=30 + timeout=3600），并支持 --effort/--best-of-n/--model/--session-id/--tools/--finalize-only 等覆盖接近网页专家模式。
 - 更新 wrapper 后 `chmod +x` 并重测。
 

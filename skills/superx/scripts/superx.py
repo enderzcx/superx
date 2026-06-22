@@ -1,21 +1,32 @@
 #!/usr/bin/env python3
-"""Thin launcher for the repository-level superx.py implementation.
+"""Thin launcher for the local canonical superx.py implementation."""
 
-The source repo keeps one implementation at ../../../superx.py so the skill copy
-cannot drift from the package entrypoint.
-"""
-
+import os
 import runpy
 import sys
 from pathlib import Path
 
 
+def candidate_sources():
+    env_source = os.environ.get("SUPERX_SOURCE")
+    if env_source:
+        yield Path(env_source).expanduser()
+    yield Path.home() / "Work" / "CODEX" / "grok" / "superx.py"
+    yield Path(__file__).resolve().parents[3] / "superx.py"
+
+
 def main() -> None:
-    source = Path(__file__).resolve().parents[3] / "superx.py"
-    if not source.exists():
-        print(f"Error: canonical superx.py not found: {source}", file=sys.stderr)
-        sys.exit(127)
-    runpy.run_path(str(source), run_name="__main__")
+    this_file = Path(__file__).resolve()
+    for source in candidate_sources():
+        try:
+            resolved = source.resolve()
+        except FileNotFoundError:
+            continue
+        if resolved.exists() and resolved != this_file:
+            runpy.run_path(str(resolved), run_name="__main__")
+            return
+    print("Error: canonical superx.py not found. Set SUPERX_SOURCE=/path/to/superx.py.", file=sys.stderr)
+    sys.exit(127)
 
 
 if __name__ == "__main__":

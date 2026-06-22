@@ -17,10 +17,17 @@ superx user <query> [--count N]
 superx semantic <query> [--limit N] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD] [--min-score FLOAT]
 superx keyword <query> [--limit N] [--mode Latest|Top] [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]
 superx thread <post-id-or-status-url>
-superx article <post-id-or-status-url> [--format md|json] [--path-only] [--force] [--output PATH] [--cache-dir DIR] [--source-mode auto|grok|opencli]
+superx article <post-id-or-status-url> [--format md|json] [--path-only] [--force] [--output PATH] [--cache-dir DIR] [--source-mode auto|grok|opencli] [--grok-timeout SEC]
 superx research <query> [--max-turns N] [--format md|json] [--path-only] [--timeout SEC] [--retries N] [--no-retry] [--allow-partial] [--output PATH] [--cache-dir DIR] [--model MODEL] [--effort low|medium|high|xhigh|max] [--best-of-n N] [--reasoning-effort EFFORT] [--session-id SESSION_ID] [--tools TOOLS] [--disallowed-tools TOOLS] [--disable-web-search] [--finalize-only] [--no-check]
 superx doctor [--format text|json] [--model MODEL] [--probe-x-tools] [--timeout SEC] [--no-update-check]
 ```
+
+## Codex Invocation Rules
+
+- Do not try to call `x_user_search`, `x_keyword_search`, `x_semantic_search`, or `x_thread_fetch` as Codex tools. They only exist inside Grok Build.
+- Do not use bare `grok -p` for normal X tasks; it can default to a model without native X tools. Use shell commands through `superx`, which forces `grok-build`.
+- `user`, `keyword`, `semantic`, and `thread` can take 25-120s. In Codex, keep polling the exec session instead of treating the first 30s yield as failure.
+- For known X long-form article/status body capture, prefer `superx article '<url>' --source-mode opencli --path-only` when speed matters.
 
 ## Capability Boundaries
 
@@ -46,6 +53,7 @@ Do not overclaim.
 - Successful metadata includes `attempt_details` with each attempt's profile, flags, return code, stderr tail, and output character counts.
 - If Grok exits non-zero or times out after producing output, `research` writes the Markdown and metadata with a partial warning, then exits non-zero unless `--allow-partial` is passed.
 - `doctor` is diagnostic only. It checks local `grok`, `opencli`, `grok version`, `grok models`, update status, and optionally probes native X tools with a live Grok call. It does not bypass subscription or model/tool limits.
+- `article --source-mode auto` gives Grok-first a short budget before OpenCLI fallback. Default Grok budget is 45s via `SUPERX_ARTICLE_GROK_TIMEOUT`; override per call with `--grok-timeout SEC`.
 - No-membership fallback means using open/public routes:
   - `r.jina.ai` for public tweet/status/article Markdown when it works.
   - `opencli twitter thread|article|profile|search` with ordinary local Chrome/X login and Browser Bridge.
