@@ -25,7 +25,7 @@ superx doctor [--format text|json] [--model MODEL] [--probe-x-tools] [--timeout 
 ## Codex Invocation Rules
 
 - Do not try to call `x_user_search`, `x_keyword_search`, `x_semantic_search`, or `x_thread_fetch` as Codex tools. They only exist inside Grok Build.
-- Do not use bare `grok -p` for normal X tasks; it can default to a model without native X tools. Use shell commands through `superx`, which forces `grok-build`.
+- Do not use bare `grok -p` for normal X tasks; it can default to a model without native X tools. Use shell commands through `superx`, which auto-selects the current X-capable model (`grok-4.5` on current CLI, `grok-build` on older CLI).
 - `user`, `keyword`, `semantic`, and `thread` can take 25-120s. In Codex, keep polling the exec session instead of treating the first 30s yield as failure.
 - For known X long-form article/status body capture, prefer `superx article '<url>' --source-mode opencli --path-only` when speed matters.
 
@@ -39,12 +39,12 @@ Do not overclaim.
 - `research` is one-shot Grok research for replacing the manual "Codex prompt -> web Grok -> paste back" loop. It is not a general Grok collaboration bridge.
 - `research` depends on local Grok CLI access. If it uses native X tools, the same SuperGrok / X Premium+ boundary applies.
 - `research` has no OpenCLI fallback and currently does not support background jobs, status/result/cancel, or durable managed collaboration.
-- `research` defaults to heavy expert-style mode: `--effort max`, `--model grok-build`, self-check enabled, `--max-turns 30`, `--timeout 3600`.
+- `research` defaults to heavy expert-style mode: `--effort max`, auto-selected X model, self-check enabled, `--max-turns 30`, `--timeout 3600`.
 - Use `--no-check` or lower `--effort` only when intentionally making the run lighter. Raise `--max-turns 45+` only for unusually broad research.
 - Use `--best-of-n N` only when intentionally asking Grok CLI to run a best-of-N subagent tournament. Start with 4 before requesting 16; the actual fan-out may be capped by Grok CLI. It is slower, more expensive, and works best from a real git worktree. It is not a model id.
 - `--tools`, `--disallowed-tools`, and `--disable-web-search` are advanced primary-run Grok CLI controls. They do not apply to automatic or manual finalizers.
 - `--session-id` resumes an existing Grok session via `-r/--resume`; it must be a real id from `grok sessions list` and does not create a named session.
-- `--reasoning-effort` only works on models that support it. Current local default `grok-build` rejects it with a 400.
+- `--reasoning-effort` only works on models that support it; do not assume support across Grok CLI updates.
 - `research` retries once by default only when Grok returns no usable Markdown. If the previous attempt hit `Max turns reached`, retry 2 resumes the same/recent Grok session with `grok -r` and runs a finalize-only pass: no tools (`--tools ""`), self-check off, `--max-turns 6`, same effort/model, output Markdown only.
 - `--no-retry` disables the automatic empty-output/max-turns resume-finalizer.
 - `--finalize-only` resumes an existing/recent Grok session and only produces the final Markdown report: no tools, no discovery, no retry. Do not combine it with `--best-of-n`.

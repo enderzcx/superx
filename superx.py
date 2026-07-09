@@ -41,9 +41,15 @@ def resolve_bin(env_name: str, default_name: str) -> str:
 
 GROK_BIN = resolve_bin("GROK_BIN", "grok")
 OPENCLI_BIN = resolve_bin("OPENCLI_BIN", "opencli")
-# Native X tools (x_user_search, etc.) are only available on grok-build.
-# Grok Build 0.2.x defaults to grok-composer-2.5-fast, which lacks them.
-SUPERX_MODEL = os.environ.get("SUPERX_MODEL", "grok-build")
+# Native X tools (x_user_search, etc.) live on Grok's current build-capable model.
+# Newer Grok CLI builds expose them on grok-4.5; older builds exposed grok-build.
+SUPERX_MODEL = os.environ.get("SUPERX_MODEL")
+DEFAULT_X_MODEL_CANDIDATES = [
+    item.strip()
+    for item in os.environ.get("SUPERX_MODEL_CANDIDATES", "grok-4.5,grok-build").split(",")
+    if item.strip()
+]
+_GROK_MODELS_CACHE = None
 
 
 def env_int(name: str, default: int) -> int:
@@ -78,6 +84,37 @@ def coerce_text(value) -> str:
     return str(value)
 
 
+def detect_grok_models(timeout: int = 20) -> dict:
+    """Return parsed `grok models` output once per process."""
+    global _GROK_MODELS_CACHE
+    if _GROK_MODELS_CACHE is not None:
+        return _GROK_MODELS_CACHE
+    try:
+        proc = subprocess.run([GROK_BIN, "models"], capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        _GROK_MODELS_CACHE = {"default": None, "models": []}
+        return _GROK_MODELS_CACHE
+    _GROK_MODELS_CACHE = parse_grok_models(proc.stdout or "") if proc.returncode == 0 else {"default": None, "models": []}
+    return _GROK_MODELS_CACHE
+
+
+def resolve_x_model(preferred: str = None, parsed_models: dict = None) -> str:
+    """Pick a model that should expose Grok native X tools on current or legacy CLIs."""
+    if preferred:
+        return preferred
+    if SUPERX_MODEL:
+        return SUPERX_MODEL
+    parsed_models = parsed_models or detect_grok_models()
+    models = parsed_models.get("models") or []
+    for candidate in DEFAULT_X_MODEL_CANDIDATES:
+        if candidate in models:
+            return candidate
+    default = parsed_models.get("default")
+    if default:
+        return default
+    return DEFAULT_X_MODEL_CANDIDATES[0] if DEFAULT_X_MODEL_CANDIDATES else "grok-4.5"
+
+
 def run_grok_headless(
     prompt: str,
     max_turns: int = 4,
@@ -88,6 +125,7 @@ def run_grok_headless(
 ) -> dict:
     """Run grok -p with yolo, capture the json output."""
     timeout = timeout or DEFAULT_HEADLESS_TIMEOUT
+    selected_model = resolve_x_model(model)
     cmd = [
         GROK_BIN,
         "-p", prompt,
@@ -96,8 +134,8 @@ def run_grok_headless(
         "--max-turns", str(max_turns),
         "--no-auto-update",
     ]
-    if model or SUPERX_MODEL:
-        cmd.extend(["-m", model or SUPERX_MODEL])
+    if selected_model:
+        cmd.extend(["-m", selected_model])
     try:
         proc = subprocess.run(
             cmd,
@@ -390,6 +428,7 @@ def parse_grok_models(stdout: str) -> dict:
 
 
 def probe_x_tools(model: str, timeout: int = 120) -> dict:
+    model = resolve_x_model(model)
     expected = ["x_user_search", "x_semantic_search", "x_keyword_search", "x_thread_fetch"]
     prompt = (
         "List every built-in tool name available to you. "
@@ -438,6 +477,9 @@ def probe_x_tools(model: str, timeout: int = 120) -> dict:
 def cmd_doctor(args):
     grok_path = shutil.which(GROK_BIN) or (GROK_BIN if Path(GROK_BIN).exists() else None)
     opencli_path = shutil.which(OPENCLI_BIN) or (OPENCLI_BIN if Path(OPENCLI_BIN).exists() else None)
+    grok_models = run_simple_command([GROK_BIN, "models"], timeout=60)
+    parsed_models = parse_grok_models(grok_models.get("stdout", ""))
+    selected_x_model = resolve_x_model(args.model, parsed_models)
     report = {
         "status": "ok",
         "grok_bin": GROK_BIN,
@@ -446,11 +488,13 @@ def cmd_doctor(args):
         "opencli_path": opencli_path,
         "python": sys.version.split()[0],
         "cwd": str(Path.cwd()),
-        "configured_x_model": SUPERX_MODEL,
+        "configured_x_model": selected_x_model,
+        "superx_model_env": SUPERX_MODEL,
+        "x_model_candidates": DEFAULT_X_MODEL_CANDIDATES,
     }
     report["grok_version"] = run_simple_command([GROK_BIN, "version"], timeout=20)
-    report["grok_models"] = run_simple_command([GROK_BIN, "models"], timeout=60)
-    report["parsed_models"] = parse_grok_models(report["grok_models"].get("stdout", ""))
+    report["grok_models"] = grok_models
+    report["parsed_models"] = parsed_models
     if not args.no_update_check:
         update = run_simple_command([GROK_BIN, "update", "--check", "--json"], timeout=60)
         if update.get("stdout"):
@@ -460,7 +504,7 @@ def cmd_doctor(args):
                 pass
         report["grok_update"] = update
     if args.probe_x_tools:
-        report["x_tool_probe"] = probe_x_tools(args.model, timeout=args.timeout)
+        report["x_tool_probe"] = probe_x_tools(selected_x_model, timeout=args.timeout)
     problems = []
     if not grok_path:
         problems.append("grok binary not found")
@@ -789,6 +833,7 @@ def research_empty_output_hint(attempt_details: list) -> str:
 
 def cmd_research(args):
     query = args.query.strip()
+    args.model = args.model or resolve_x_model()
     if not query:
         print("Error: research query is empty", file=sys.stderr)
         sys.exit(2)
@@ -946,7 +991,7 @@ def main():
     # doctor
     p_doctor = sub.add_parser("doctor", help="Diagnose local Grok CLI, model, native X tool, and fallback availability")
     p_doctor.add_argument("--format", choices=["text", "json"], default="text")
-    p_doctor.add_argument("--model", default=SUPERX_MODEL, help="Model to probe for native X tools (default SUPERX_MODEL or grok-build)")
+    p_doctor.add_argument("--model", help="Model to probe for native X tools (default auto: SUPERX_MODEL, grok-4.5, grok-build, then Grok CLI default)")
     p_doctor.add_argument("--probe-x-tools", action="store_true", help="Run a live Grok probe to confirm x_user_search/x_keyword_search/x_semantic_search/x_thread_fetch availability")
     p_doctor.add_argument("--timeout", type=int, default=120, help="Timeout in seconds for the optional live X tool probe")
     p_doctor.add_argument("--no-update-check", action="store_true", help="Skip `grok update --check --json`")
@@ -1012,10 +1057,10 @@ def main():
     p_research.add_argument("--retries", type=int, default=int(os.environ.get("SUPERX_RESEARCH_RETRIES", "1")), help="Continuation/finalization attempts when Grok returns no usable Markdown (default 1 or SUPERX_RESEARCH_RETRIES)")
     p_research.add_argument("--no-retry", dest="no_retry", action="store_true", help="Disable the automatic empty-output/max-turns resume-finalizer retry")
     p_research.add_argument("--allow-partial", action="store_true", help="exit 0 even if grok exits non-zero after producing output")
-    p_research.add_argument("--model", default="grok-build", help="Model to use (default grok-build for heavy research; see `grok models`)")
+    p_research.add_argument("--model", help="Model to use (default auto: SUPERX_MODEL, grok-4.5, grok-build, then Grok CLI default; see `grok models`)")
     p_research.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default="max", help="Effort level (default max for heavy/expert-like research)")
     p_research.add_argument("--best-of-n", dest="best_of_n", type=int, help="Run the primary Grok call as a best-of-N subagent tournament. Larger requested N values depend on Grok CLI runtime caps. Retry finalizers do not use it.")
-    p_research.add_argument("--reasoning-effort", dest="reasoning_effort", help="Reasoning effort (only for models that support it; grok-build does not)")
+    p_research.add_argument("--reasoning-effort", dest="reasoning_effort", help="Reasoning effort (only for models that support it; verify with `grok models`/`superx doctor`)")
     p_research.add_argument("--session-id", dest="session_id", help="Existing Grok session ID (from `grok sessions list`) to resume for follow-up. Uses --resume; cannot create arbitrary names.")
     p_research.add_argument("--tools", help="Advanced: pass Grok CLI --tools to the primary research run")
     p_research.add_argument("--disallowed-tools", dest="disallowed_tools", help="Advanced: pass Grok CLI --disallowed-tools to the primary research run")

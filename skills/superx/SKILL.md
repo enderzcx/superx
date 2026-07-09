@@ -32,14 +32,14 @@ For Ender's local agent environment, `superx` is the default first route for X/T
 - X long-form article capture when a Markdown cache under `.superx/articles/` is useful;
 - X-first/frontier research where X is a primary signal source.
 
-Do not start with `fetch-x` just because the user provided a known X URL. Use `fetch-x` only after `superx` is unavailable, blocked, explicitly unsuitable, or the user specifically asks for proxy/opencli diagnostics.
+Do not start with `fetch-x` just because the user provided a known X URL. Use `fetch-x` only after `superx` is unavailable, blocked, explicitly unsuitable, or the user specifically asks for proxy/opencli diagnostics。
 
 ## Codex Execution Contract
 
 Codex and local agents must call the shell CLI, not imagined in-process tools:
 
 - Do not directly call `x_user_search`, `x_keyword_search`, `x_semantic_search`, or `x_thread_fetch` from Codex. Those are Grok Build native tools, not Codex tools.
-- Do not bypass the wrapper with bare `grok -p` for normal tasks. Bare Grok may default to `grok-composer-2.5-fast`, which lacks native X tools; `superx` forces `grok-build`.
+- Do not bypass the wrapper with bare `grok -p` for normal tasks. Bare Grok may default to a model without native X tools; `superx` auto-selects the current X-capable model (`grok-4.5` on current CLI, `grok-build` on older CLI) unless `SUPERX_MODEL` overrides it.
 - Run `superx user|semantic|keyword|thread|article|research ...` from shell and read stdout or the cached Markdown path.
 - Use the longest available exec yield and keep polling long-running commands. Do not treat the first 30s with no final output as failure, and do not send SIGINT while the subprocess is still inside its documented timeout.
 - For known X long-form article/status body capture, prefer `superx article '<url>' --source-mode opencli --path-only` when speed matters or the Grok-first path is already known to hang.
@@ -127,7 +127,7 @@ superx doctor --format json
 superx doctor --probe-x-tools
 ```
 
-默认 `doctor` 只检查本机 `grok`、`opencli`、`grok version`、`grok models` 和更新状态，不发起 live X 工具调用。`--probe-x-tools` 会用 `grok-build` 做一次真实 probe，确认 `x_user_search` / `x_keyword_search` / `x_semantic_search` / `x_thread_fetch` 是否可用。
+默认 `doctor` 只检查本机 `grok`、`opencli`、`grok version`、`grok models` 和更新状态，不发起 live X 工具调用。`--probe-x-tools` 会用 auto-selected X 模型做一次真实 probe，确认 `x_user_search` / `x_keyword_search` / `x_semantic_search` / `x_thread_fetch` 是否可用。
 
 ### 一次性调研 / research（解决 copy-paste 痛点）
 
@@ -141,7 +141,7 @@ Codex 出 prompt → 你复制粘贴到网页 Grok → 结果复制回来喂 Cod
 superx research "调研 2026 年本地 AI agent 如何更好使用 Grok Build 原生 X 工具 + web 调研 + research 缓存" --path-only
 ```
 
-- 默认即重度专家模式：`--effort max --model grok-build --check --max-turns 30 --timeout 3600`（无需额外指定）。
+- 默认即重度专家模式：`--effort max --model <auto-selected X model> --check --max-turns 30 --timeout 3600`（无需额外指定）。
 - superx 直接调用**本地 grok** 做 one-shot research（会按需使用 web_search、open_page、原生 X 工具等）。
 - 默认定位是 **X-first / frontier research**，不是通用 Grok 协作桥。
 - 输出高质量结构化 Markdown（Executive Summary、Key Findings、Sources 等）。
@@ -152,7 +152,7 @@ superx research "调研 2026 年本地 AI agent 如何更好使用 Grok Build �
 - 不支持 background job、status/result/cancel 这类可管理的连续协作桥；`--session-id` 只是恢复已有 Grok session 做有限跟进。这些留给未来 `grb` / Grok bridge。
 
 **推荐在 Codex 长期指导里加入**（强烈建议）：
-"需要对 X 相关、前沿工具链、AI agent 实践等主题做一次性调研时，**直接 shell 执行 `superx research \"详细问题\" --path-only`**（默认即重度专家模式：effort=max + check + model=grok-build + max-turns=30 + timeout=3600；max-turns 后会 resume-finalize），不要再生成 prompt 让我手动去网页 Grok 粘贴。结果会自动落盘到 .superx/research/ 下，后续直接读本地文件。"
+"需要对 X 相关、前沿工具链、AI agent 实践等主题做一次性调研时，**直接 shell 执行 `superx research \"详细问题\" --path-only`**（默认即重度专家模式：effort=max + check + auto-selected X model + max-turns=30 + timeout=3600；max-turns 后会 resume-finalize），不要再生成 prompt 让我手动去网页 Grok 粘贴。结果会自动落盘到 .superx/research/ 下，后续直接读本地文件。"
 
 其他参数（用于微调，覆盖默认重度设置）：
 ```bash
@@ -170,7 +170,7 @@ superx research "topic" --effort high           # 降低到 high（默认 max）
 superx research "topic" --effort xhigh --best-of-n 16  # 请求 Grok CLI best-of-N subagent tournament
 superx research "topic" --no-check              # 关闭自检（默认开启）
 superx research "topic" --model grok-composer-2.5-fast  # 换快模型
-superx research "topic" --reasoning-effort high # 仅限支持的模型；grok-build 会 400
+superx research "topic" --reasoning-effort high # 仅限支持的模型；先用 `grok models` / `superx doctor` 确认
 superx research "topic" --session-id 019e...    # 恢复已有 Grok session id（来自 `grok sessions list`，不能创建自定义名）
 superx research "topic" --tools web_search,x_keyword_search --disallowed-tools run_terminal_command  # primary run 工具控制
 superx research "topic" --disable-web-search    # primary run 禁用 web_search
@@ -181,7 +181,7 @@ superx research "topic" --finalize-only --session-id 019e...  # 只整理已有 
 `--best-of-n N` 透传 Grok CLI 的 best-of-N subagent tournament，只用于 primary research run；resume-finalizer 不继续并发。先用 4 验证，再请求 16；实际 fan-out 由当前 Grok CLI 决定。它不是模型 ID；当前本机 `grok models` 没列出 `grok-4.20-multi-agent-xhigh`。
 `--check`（默认开）会消耗更多 turns；默认已经是 `--max-turns 30`，特别宽的调研再手动提高到 `--max-turns 45+`。
 `--session-id` 只能恢复真实已有 session，不会创建自定义命名 session。
-当前本机 `grok models` 可见 `grok-build`（默认，重度推荐）和 `grok-composer-2.5-fast`；`grok-build` 不支持 `--reasoning-effort`，传了会 400。
+当前本机 `grok models` 可见 `grok-4.5`（默认，带原生 X 工具）和 `grok-composer-2.5-fast`；旧文档里的 `grok-build` 在新版 CLI 上可能已经不可用。`--reasoning-effort` 取决于模型支持情况，传参前先确认。
 
 `--retries` 只处理“没有可保存 Markdown”的情况；默认 `1` 表示 heavy 尝试命中 `Max turns reached` 后自动 resume 最近 Grok session 做 finalize-only。它不是账号权限、rate limit 或无会员 fallback。
 `--no-retry` 会关闭自动 resume-finalizer。`--finalize-only` 只恢复已有/最近 Grok session 并输出 Markdown，不调用工具、不继续 discovery、也不再自动 retry；不能和 `--best-of-n` 同用。
@@ -192,20 +192,20 @@ superx research "topic" --finalize-only --session-id 019e...  # 只整理已有 
 
 ### 直接用 grok CLI（仅人工调试）
 
-Codex 默认不要使用这一节；正常任务必须使用 `superx` wrapper。下面只用于人工验证 Grok Build 工具面，并且必须显式指定 `-m grok-build`。
+Codex 默认不要使用这一节；正常任务必须使用 `superx` wrapper。下面只用于人工验证 Grok Build 工具面，并且必须显式指定当前 X 模型。当前 CLI 用 `grok-4.5`；旧 CLI 可能是 `grok-build`。
 
 ```bash
 # 用户搜索
-grok -m grok-build -p 'You MUST call x_user_search with query="xAI" count=3. After result, output ONLY the tool JSON result, nothing else.' --yolo --output-format json | jq -r '.text'
+grok -m grok-4.5 -p 'You MUST call x_user_search with query="xAI" count=3. After result, output ONLY the tool JSON result, nothing else.' --yolo --output-format json | jq -r '.text'
 
 # 语义
-grok -m grok-build -p 'MUST use x_semantic_search. query="xAI Grok release notes" limit=5 from_date="2026-04-01". Output ONLY tool result JSON.' --yolo --output-format json | jq -r '.text'
+grok -m grok-4.5 -p 'MUST use x_semantic_search. query="xAI Grok release notes" limit=5 from_date="2026-04-01". Output ONLY tool result JSON.' --yolo --output-format json | jq -r '.text'
 
 # 关键词（高级语法全支持）
-grok -m grok-build -p 'Call x_keyword_search. query="from:xai min_faves:100 since:2026-05-01", mode="Latest", limit=10. ONLY the tool JSON.' --yolo --output-format json | jq -r '.text'
+grok -m grok-4.5 -p 'Call x_keyword_search. query="from:xai min_faves:100 since:2026-05-01", mode="Latest", limit=10. ONLY the tool JSON.' --yolo --output-format json | jq -r '.text'
 
 # 线程
-grok -m grok-build -p 'Use x_thread_fetch with post_id="1661523610111193088". Output ONLY the full thread JSON from the tool.' --yolo --output-format json | jq -r '.text'
+grok -m grok-4.5 -p 'Use x_thread_fetch with post_id="1661523610111193088". Output ONLY the full thread JSON from the tool.' --yolo --output-format json | jq -r '.text'
 ```
 
 ## 参数速查（对应原生工具 schema）
@@ -215,7 +215,7 @@ grok -m grok-build -p 'Use x_thread_fetch with post_id="1661523610111193088". Ou
 - **keyword**: `query` (必，高级语法), `limit`, `mode` ("Latest"|"Top"), `from_date`, `to_date` ...
 - **thread**: `post_id` (数字字符串或可从中抽取的 URL)
 - **article**: `source` (status/article URL 或 ID), `--format md|json`, `--path-only`, `--force`, `--output`, `--cache-dir`, `--source-mode auto|grok|opencli`
-- **research**: `query` (必), `--max-turns`, `--format md|json`, `--path-only`, `--timeout`, `--retries`, `--no-retry`, `--allow-partial`, `--output`, `--cache-dir`, `--model` (default grok-build), `--effort` (default max), `--best-of-n`, `--reasoning-effort`, `--session-id`, `--tools`, `--disallowed-tools`, `--disable-web-search`, `--finalize-only`, `--no-check` (默认开启自检)
+- **research**: `query` (必), `--max-turns`, `--format md|json`, `--path-only`, `--timeout`, `--retries`, `--no-retry`, `--allow-partial`, `--output`, `--cache-dir`, `--model` (default auto-selected X model), `--effort` (default max), `--best-of-n`, `--reasoning-effort`, `--session-id`, `--tools`, `--disallowed-tools`, `--disable-web-search`, `--finalize-only`, `--no-check` (默认开启自检)
 - **doctor**: `--format text|json`, `--model`, `--probe-x-tools`, `--timeout`, `--no-update-check`
 
 更多过滤见原生工具定义（from_date 等对 keyword/semantic 都有效）。
@@ -223,7 +223,7 @@ grok -m grok-build -p 'Use x_thread_fetch with post_id="1661523610111193088". Ou
 ## 集成到 Codex（或其他 agent）
 
 - **X 结构化搜索**：直接 `superx user / semantic / keyword / thread / article`，拿 JSON。
-- **一次性深度研究**：`superx research "问题" --path-only`（默认重度专家模式：effort=max + check + model=grok-build + max-turns=30 + timeout=3600；max-turns 后默认 resume-finalize 一次），拿 Markdown + metadata 缓存。**这是解决你主要痛点的推荐方式**。
+- **一次性深度研究**：`superx research "问题" --path-only`（默认重度专家模式：effort=max + check + auto-selected X model + max-turns=30 + timeout=3600；max-turns 后默认 resume-finalize 一次），拿 Markdown + metadata 缓存。**这是解决你主要痛点的推荐方式**。
 - **诊断**：先跑 `superx doctor --format json --no-update-check`；怀疑原生 X 工具不可用时再跑 `superx doctor --probe-x-tools`。
 - 覆盖默认：用 `--no-check` 关闭自检、`--effort high` 降级、`--best-of-n 4|16` 开 Grok CLI subagent tournament、`--max-turns 45` 更深、`--session-id <真实id>` 跟进（只能恢复 `grok sessions list` 里的，不能创建自定义名）、`--tools/--disallowed-tools/--disable-web-search` 控制 primary run 工具面、`--finalize-only` 手动收口已有 session。
 - 在 Codex 的系统 prompt / task 开头或 AGENTS.md 里明确指导：
@@ -253,10 +253,10 @@ grok -m grok-build -p 'Use x_thread_fetch with post_id="1661523610111193088". Ou
 ## 故障排查
 
 - `grok: command not found` → `export PATH="$HOME/.local/bin:$PATH"` 或用全路径。
-- **X 子命令超时 / max turns / 找不到 `x_user_search`** → 先跑 `superx doctor --format json --no-update-check`，必要时跑 `superx doctor --probe-x-tools` 做 live probe。Grok Build 更新后默认模型常变成 `grok-composer-2.5-fast`，它**没有**原生 X 工具；只有 `grok-build` 才有 `x_user_search` / `x_keyword_search` / `x_semantic_search` / `x_thread_fetch`。wrapper 的 `user` / `semantic` / `keyword` / `thread` / `article` 已强制 `-m grok-build`；可用 `SUPERX_MODEL=grok-build` 覆盖。
+- **X 子命令超时 / max turns / 找不到 `x_user_search` / unknown model id** → 先跑 `superx doctor --format json --no-update-check`，必要时跑 `superx doctor --probe-x-tools` 做 live probe。Grok CLI 更新后 X 工具模型名可能变化；wrapper 会在 `grok-4.5`、`grok-build`、Grok 默认模型之间自动选择，也可用 `SUPERX_MODEL=<model>` 或 `SUPERX_MODEL_CANDIDATES=a,b` 覆盖。
 - **Grok Build IDE / Composer agent 里没有 `x_*` 工具** → 正常。IDE 侧默认是 composer 工具面（Shell/Grep/WebSearch…），不能直接调 X 工具；请 shell 跑 `superx user/semantic/keyword/thread/article/research`，不要指望 agent 内置 `x_user_search`。
 - **Codex 30 秒看起来没响应** → 这通常不是 CLI 挂了。`user` / `keyword` / `thread` 可能需要 25-120s；保持 exec session 继续轮询，不要 30s 就中断。
-- 工具没返回 / 乱输出 → wrapper 里的 prompt 已经很严格；可加 `--max-turns 5` 重试，或直接在 grok TUI 里用 `grok-build` 验证 `x_user_search` 等。
+- 工具没返回 / 乱输出 → wrapper 里的 prompt 已经很严格；可加 `--max-turns 5` 重试，或直接在 grok TUI 里用 `superx doctor --probe-x-tools` 显示的模型验证 `x_user_search` 等。
 - `superx article` 默认 `auto` 会给 Grok-first 尝试一个较短预算（默认 45s，可用 `SUPERX_ARTICLE_GROK_TIMEOUT` 或 `--grok-timeout` 调整），然后 fallback 到 OpenCLI。已知长文想快取正文时，直接用 `superx article '<url>' --source-mode opencli --path-only`。
 - 认证问题 → `grok login` 或 `export XAI_API_KEY=...`
 - 某些高级语法不生效 → 确认 query 字符串正确（Grok 会原样传给工具）。
@@ -268,12 +268,12 @@ grok -m grok-build -p 'Use x_thread_fetch with post_id="1661523610111193088". Ou
 - canonical 源码：仓库根目录 `superx.py`
 - 本 skill 的 `scripts/superx.py` 是薄 launcher，不再复制 wrapper 主体，避免仓库版和 skill 版漂移。
 - 安装版 launcher 优先读 `SUPERX_SOURCE`，默认指向 `/Users/sunny/Work/CODEX/grok/superx.py`；移动源码目录后更新环境变量或 symlink。
-- X 专用子命令保持结构化 JSON；`research` 子命令默认重度专家模式（effort=max + check + model=grok-build + max-turns=30 + timeout=3600），并支持 --effort/--best-of-n/--model/--session-id/--tools/--finalize-only 等覆盖接近网页专家模式。
+- X 专用子命令保持结构化 JSON；`research` 子命令默认重度专家模式（effort=max + check + auto-selected X model + max-turns=30 + timeout=3600），并支持 --effort/--best-of-n/--model/--session-id/--tools/--finalize-only 等覆盖接近网页专家模式。
 - 更新 wrapper 后 `chmod +x` 并重测。
 
 **直接结论**：
 - X 搜索/线程/article：`superx xxx` 一行出结构化数据 + 缓存。
-- 一次性深度调研：`superx research "..." --path-only`（**默认重度**：effort=max + check + model=grok-build + max-turns=30 + timeout=3600；max-turns 后 resume-finalize）—— 直接解决你之前 "Codex 出 prompt → 网页 Grok → 复制回来" 的循环。本地 grok 做 one-shot research，结果落盘 .superx/research/，Codex 直接读文件。
-- 用 `superx doctor` 查本机环境；用 `--no-check` / `--effort high` / `--best-of-n 4|16` / `--max-turns 45` / `--session-id <真实id>` / `--tools` / `--finalize-only` 等微调（session 只能恢复已有，不能自定义名；grok-build 不支持 reasoning-effort）。
+- 一次性深度调研：`superx research "..." --path-only`（**默认重度**：effort=max + check + auto-selected X model + max-turns=30 + timeout=3600；max-turns 后 resume-finalize）—— 直接解决你之前 "Codex 出 prompt → 网页 Grok → 复制回来" 的循环。本地 grok 做 one-shot research，结果落盘 .superx/research/，Codex 直接读文件。
+- 用 `superx doctor` 查本机环境；用 `--no-check` / `--effort high` / `--best-of-n 4|16` / `--max-turns 45` / `--session-id <真实id>` / `--tools` / `--finalize-only` 等微调（session 只能恢复已有，不能自定义名；`--reasoning-effort` 取决于当前模型支持情况）。
 
-需要扩展更多（managed follow-up bridge、MCP 包装、research 模板参数等），随时说。
+需要扩展更多（research 模板参数等），随时说。

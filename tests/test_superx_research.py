@@ -28,6 +28,8 @@ class SuperxResearchTests(unittest.TestCase):
 
     def run_superx(self, args, fake_grok: Path):
         env = os.environ.copy()
+        env.pop("SUPERX_MODEL", None)
+        env.pop("SUPERX_MODEL_CANDIDATES", None)
         env["GROK_BIN"] = str(fake_grok)
         return subprocess.run(
             [sys.executable, str(SUPERX), *args],
@@ -324,7 +326,7 @@ EOF
             output = tmp_path / "retry.md"
 
             proc = self.run_superx(
-                ["research", "retry ok", "--retries", "1", "--format", "json", "--output", str(output)],
+                ["research", "retry ok", "--retries", "1", "--model", "fake-model", "--format", "json", "--output", str(output)],
                 fake,
             )
 
@@ -390,6 +392,8 @@ EOF
                 [
                     "research",
                     "wide topic",
+                    "--model",
+                    "fake-model",
                     "--best-of-n",
                     "4",
                     "--tools",
@@ -568,7 +572,7 @@ EOF
             self.assertEqual(proc.returncode, 0, proc.stderr)
             metadata = json.loads(proc.stdout)
             self.assertFalse(metadata["check"])
-            self.assertEqual(metadata["model"], "grok-build")
+            self.assertEqual(metadata["model"], "grok-4.5")
             self.assertEqual(metadata["effort"], "max")
 
     def test_research_empty_output_prints_stderr_tail(self):
@@ -700,10 +704,28 @@ exit 1
             self.assertEqual(proc.returncode, 0, proc.stderr)
             report = json.loads(proc.stdout)
             self.assertEqual(report["status"], "ok")
+            self.assertEqual(report["configured_x_model"], "grok-build")
             self.assertEqual(report["parsed_models"]["default"], "grok-composer-2.5-fast")
             self.assertIn("grok-build", report["parsed_models"]["models"])
             self.assertFalse(report["grok_update"]["json"]["updateAvailable"])
+            self.assertEqual(report["x_tool_probe"]["model"], "grok-build")
             self.assertTrue(report["x_tool_probe"]["x_tools_available"])
+
+    def test_resolve_x_model_prefers_current_then_legacy_candidates(self):
+        import superx
+
+        self.assertEqual(
+            superx.resolve_x_model(parsed_models={"default": "grok-4.5", "models": ["grok-4.5", "grok-composer-2.5-fast"]}),
+            "grok-4.5",
+        )
+        self.assertEqual(
+            superx.resolve_x_model(parsed_models={"default": "grok-composer-2.5-fast", "models": ["grok-build", "grok-composer-2.5-fast"]}),
+            "grok-build",
+        )
+        self.assertEqual(
+            superx.resolve_x_model("custom-model", parsed_models={"default": "grok-4.5", "models": ["grok-4.5"]}),
+            "custom-model",
+        )
 
     def test_max_turns_reached_accepts_common_variants(self):
         import superx
@@ -744,7 +766,7 @@ exit 1
         self.assertEqual(result["_superx_grok_stderr"], "stderr details")
         self.assertEqual(result["text"], "{\"ok\": true}")
 
-    def test_json_runner_forces_grok_build_for_native_x_tools(self):
+    def test_json_runner_auto_selects_current_x_model(self):
         import superx
 
         completed = subprocess.CompletedProcess(
@@ -753,12 +775,13 @@ exit 1
             stdout=json.dumps({"text": "[]"}),
             stderr="",
         )
-        with mock.patch("superx.subprocess.run", return_value=completed) as run:
+        with mock.patch("superx.detect_grok_models", return_value={"default": "grok-4.5", "models": ["grok-4.5"]}), \
+            mock.patch("superx.subprocess.run", return_value=completed) as run:
             superx.run_grok_headless("prompt")
 
         cmd = run.call_args.args[0]
         self.assertIn("-m", cmd)
-        self.assertEqual(cmd[cmd.index("-m") + 1], "grok-build")
+        self.assertEqual(cmd[cmd.index("-m") + 1], "grok-4.5")
 
 
 if __name__ == "__main__":

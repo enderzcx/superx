@@ -28,7 +28,7 @@
 - Markdown cache：`article` 会把内容保存到当前项目的 `.superx/articles/`，后续 Agent 可以直接读文件，不用重复抓取同一个 URL。
 - Research cache：`research` 会让 Grok 做一次性调研，把报告保存到 `.superx/research/`，旁边写入一份 metadata JSON。
 
-Agent 集成时要 shell 调用 `superx ...`，不要把 `x_user_search` / `x_thread_fetch` 当成 Codex 内置工具，也不要用裸 `grok -p` 替代 wrapper。`superx` 会强制使用有 X 工具的 `grok-build`。
+Agent 集成时要 shell 调用 `superx ...`，不要把 `x_user_search` / `x_thread_fetch` 当成 Codex 内置工具，也不要用裸 `grok -p` 替代 wrapper。`superx` 会自动选择当前带 X 工具的模型：新版 CLI 通常是 `grok-4.5`，旧版 CLI 可能是 `grok-build`。
 
 ## 能力边界
 
@@ -113,7 +113,7 @@ superx doctor --format json
 superx doctor --probe-x-tools
 ```
 
-默认 `doctor` 不发起 live Grok 工具调用；`--probe-x-tools` 会用 `grok-build` 做一次 live probe，确认 `x_user_search`、`x_keyword_search`、`x_semantic_search`、`x_thread_fetch` 是否真的可用。
+默认 `doctor` 不发起 live Grok 工具调用；`--probe-x-tools` 会用 auto-selected X 模型做一次 live probe，确认 `x_user_search`、`x_keyword_search`、`x_semantic_search`、`x_thread_fetch` 是否真的可用。
 
 搜索用户：
 
@@ -181,7 +181,7 @@ superx article 'https://x.com/0xenderzcx/status/2061778310934516097?s=20' --sour
 superx research "调研 Grok Build 原生 X 工具如何改变本地 Agent 工作流"
 ```
 
-默认参数：`--max-turns 30`、`--timeout 3600`、`--model grok-build`、`--effort max`、自检开启。自检会让 Grok 在最终输出前多做一轮检查。
+默认参数：`--max-turns 30`、`--timeout 3600`、auto-selected X model、`--effort max`、自检开启。自检会让 Grok 在最终输出前多做一轮检查。
 
 需要让 Grok CLI 自己开多个 subagents 并发做候选解时，显式加 `--best-of-n N`。例如请求 16 路 xhigh：
 
@@ -189,7 +189,7 @@ superx research "调研 Grok Build 原生 X 工具如何改变本地 Agent 工�
 superx research "调研 Grok CLI multi-agent/best-of-n 对本地 agent 工作流的价值" --effort xhigh --best-of-n 16 --max-turns 45 --timeout 5400
 ```
 
-`--best-of-n` 透传 Grok CLI 的 best-of-N tournament，只用于第一轮 primary run；如果后续需要 resume-finalizer 整理 Markdown，finalizer 不会继续开并发候选。当前本机 `grok models` 未列出 `grok-4.20-multi-agent-xhigh` 这个模型 ID；CLI 原生路线是 `--model grok-build --effort xhigh --best-of-n 16`。实际候选数量由当前 Grok CLI 决定；本机 smoke 中请求 16 时，tournament 输出汇报了 10 个候选。
+`--best-of-n` 透传 Grok CLI 的 best-of-N tournament，只用于第一轮 primary run；如果后续需要 resume-finalizer 整理 Markdown，finalizer 不会继续开并发候选。当前本机 `grok models` 未列出 `grok-4.20-multi-agent-xhigh` 这个模型 ID；CLI 原生路线是默认 auto-selected X model（当前为 `grok-4.5`）配合 `--effort xhigh --best-of-n 16`。实际候选数量由当前 Grok CLI 决定。
 
 如果第一轮因为 `Max turns reached` 没有产出可保存 Markdown，默认第二轮会接上同一个工作目录里的 Grok 最近 session（等价 `grok -r`）做 finalize-only：禁用工具（`--tools ""`）、不继续找资料、关闭自检、`--max-turns 6`、保留原 effort/model，只把已有上下文整理成 Markdown。
 
@@ -252,9 +252,9 @@ superx research "只基于当前 session 上下文整理，不再 web 搜索" --
 - `--effort low|medium|high|xhigh|max` 会透传给 Grok CLI，默认 `max`。
 - `--best-of-n N` 会透传 Grok CLI 的 best-of-N subagent tournament，建议先用 4 验证，再请求 16；实际 fan-out 可能受 Grok CLI 上限影响。它会更慢、更耗额度，也更依赖当前 cwd 是正常 git 工作树。
 - `--no-check` 会关闭默认自检；默认开启自检，建议保留给重度调研。
-- `--model` 可用 `grok models` 查看；默认 `grok-build`，当前本机也看到 `grok-composer-2.5-fast`。
+- `--model` 可用 `grok models` 查看；默认自动选择 X-capable 模型，优先 `SUPERX_MODEL`，再试 `grok-4.5`、`grok-build`，最后回落到 Grok CLI 默认模型。
 - `--session-id` 使用 Grok CLI 的 `-r/--resume`，只能恢复 `grok sessions list` 里已有的真实 session id，不会创建自定义命名 session。
-- `--reasoning-effort` 只适合支持 reasoning effort 的模型；当前 `grok-build` 会返回 400，不建议和默认模型一起使用。
+- `--reasoning-effort` 只适合支持 reasoning effort 的模型；是否可用取决于当前 auto-selected 模型。
 - `--retries` 只处理“没有可保存 Markdown”的情况；默认 `1` 表示 heavy 尝试命中 `Max turns reached` 后自动接同一个 Grok session 做 finalize-only。它不是账号权限、rate limit 或无会员 fallback。
 - `--no-retry` 会关闭默认空输出/max-turns 后的自动 resume-finalizer。
 - `--finalize-only` 只恢复已有/最近 Grok session 并输出最终 Markdown，不继续 discovery，不调用工具，不再自动 retry；它不能和 `--best-of-n` 同用。
@@ -440,7 +440,7 @@ superx doctor --probe-x-tools
 
 ### `reasoningEffort` 400
 
-这表示当前模型不支持 `--reasoning-effort`。本机默认 `grok-build` 已实测会返回 400。去掉该参数，或换成真正支持 reasoning effort 的模型。
+这表示当前模型不支持 `--reasoning-effort`。去掉该参数，或换成真正支持 reasoning effort 的模型。
 
 ### `article` 只拿到一个 `t.co` 链接
 
@@ -478,7 +478,7 @@ export SUPERX_CACHE_DIR="$HOME/.cache/superx"
 - `research --best-of-n N` 使用 Grok CLI 原生 best-of-N subagent tournament；它不是新的模型 ID，也不会在 resume-finalizer 阶段继续并发。
 - `--session-id` 只能恢复已有 Grok session id，不会创建命名会话；网页式随意连续聊天仍然更适合未来 `grb` 或 Grok 网页。
 - `research` 没有 OpenCLI fallback；它依赖 Grok CLI，且使用原生 X 工具时仍受账号权限限制。
-- `--reasoning-effort` 取决于模型支持情况；当前 `grok-build` 不支持。
+- `--reasoning-effort` 取决于模型支持情况；先用 `grok models` 和 `superx doctor --probe-x-tools` 确认当前模型。
 - `research` 默认会对 max-turns 后的空输出重试 1 次；第二轮 resume 最近 Grok session 做 finalize-only，并传 `--tools ""` 禁用工具，不是权限或 rate limit fallback。
 - `--tools`、`--disallowed-tools`、`--disable-web-search` 只作用于 primary research run；finalizer 始终偏向“只整理已有上下文”。
 - `research` 遇到 Grok 非零退出码时会把已有内容标记为 partial；默认非零退出，`--allow-partial` 才会放行。
