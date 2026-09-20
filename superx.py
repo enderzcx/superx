@@ -52,6 +52,38 @@ DEFAULT_X_MODEL_CANDIDATES = [
 _GROK_MODELS_CACHE = None
 
 
+def grok_state_dir() -> Path:
+    """Grok's state directory: $GROK_HOME when set, else ~/.grok."""
+    override = os.environ.get("GROK_HOME")
+    return Path(override).expanduser() if override else Path.home() / ".grok"
+
+
+def grok_state_dir_problem() -> str:
+    """Return why grok cannot write its state dir, or '' when it can.
+
+    Grok creates its session database, auth lock, and WAL files there. A host
+    that confines writes to the workspace makes that fail with an opaque
+    `FS_PERMISSION_DENIED`, so superx probes first and reports the real cause.
+    """
+    target = grok_state_dir()
+    probe = target / ".superx-write-probe"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        return f"cannot write {target} ({exc.strerror or exc})"
+    return ""
+
+
+GROK_STATE_HINT = (
+    "Grok keeps its session and auth state there and cannot create a session without "
+    "write access. Fix: allow that path for this host (DSH: set "
+    "`permission.defaultPreset: danger-full-access` in ~/.dsh/settings.yaml, then start "
+    "a new session), or point GROK_HOME at a writable directory."
+)
+
+
 def env_int(name: str, default: int) -> int:
     value = os.environ.get(name)
     if not value:
@@ -124,6 +156,11 @@ def run_grok_headless(
     model: str = None,
 ) -> dict:
     """Run grok -p with yolo, capture the json output."""
+    problem = grok_state_dir_problem()
+    if problem:
+        print(f"Error: superx cannot run grok: {problem}", file=sys.stderr)
+        print(f"Hint: {GROK_STATE_HINT}", file=sys.stderr)
+        sys.exit(126)
     timeout = timeout or DEFAULT_HEADLESS_TIMEOUT
     selected_model = resolve_x_model(model)
     cmd = [
@@ -195,6 +232,13 @@ def run_grok_plain(
     disable_web_search: bool = False,
     check: bool = False,
 ) -> dict:
+    problem = grok_state_dir_problem()
+    if problem:
+        return {
+            "text": "",
+            "_superx_grok_returncode": 126,
+            "_superx_grok_stderr": f"superx: {problem}. {GROK_STATE_HINT}",
+        }
     cmd = [
         GROK_BIN,
         "-p", prompt,
